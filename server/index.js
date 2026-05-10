@@ -1,0 +1,138 @@
+import { createServer } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
+import { extname, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { db, getBatches, getIssues, getRules, getSettings, migrate } from './db.js';
+import { importCsvContent } from './importer.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const root = join(__dirname, '..');
+const publicDir = join(root, 'public');
+const port = Number(process.env.PORT ?? 4173);
+const samplePath = process.env.SAMPLE_CSV ?? 'C:\\Users\\usEr\\Downloads\\tickets_export_with_dates - Tickets.csv';
+
+const mime = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon'
+};
+
+function json(response, status, payload) {
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  response.end(JSON.stringify(payload));
+}
+
+async function readBody(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function bootstrapPayload() {
+  return {
+    issues: getIssues(),
+    batches: getBatches(),
+    settings: getSettings(),
+    rules: getRules()
+  };
+}
+
+function serveStatic(request, response) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  const cleanPath = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+  const filePath = join(publicDir, cleanPath || 'index.html');
+  const safePath = filePath.startsWith(publicDir) ? filePath : join(publicDir, 'index.html');
+  const finalPath = existsSync(safePath) ? safePath : join(publicDir, 'index.html');
+  response.writeHead(200, { 'Content-Type': mime[extname(finalPath)] ?? 'application/octet-stream' });
+  response.end(readFileSync(finalPath));
+}
+
+async function handleApi(request, response) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (request.method === 'GET' && url.pathname === '/api/bootstrap') {
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/import') {
+    const body = JSON.parse(await readBody(request));
+    const result = importCsvContent(body.filename ?? 'upload.csv', body.content ?? '');
+    json(response, result.ok ? 200 : 400, { ...result, ...bootstrapPayload() });
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/settings') {
+    const settings = JSON.parse(await readBody(request));
+    const statement = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    for (const [key, value] of Object.entries(settings)) statement.run(key, String(value));
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/rules') {
+    const body = JSON.parse(await readBody(request));
+    if (body.id) {
+      db.prepare(`
+        UPDATE category_keyword_rules
+        SET category = ?, keyword = ?, language = ?, weight = ?, active = ?
+        WHERE id = ?
+      `).run(body.category, body.keyword, body.language, Number(body.weight), body.active ? 1 : 0, body.id);
+    } else {
+      db.prepare(`
+        INSERT INTO category_keyword_rules (category, keyword, language, weight, active)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(body.category, body.keyword, body.language, Number(body.weight), body.active ? 1 : 0);
+    }
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  const categoryMatch = url.pathname.match(/^\/api\/issues\/(\d+)\/category$/);
+  if (request.method === 'POST' && categoryMatch) {
+    const body = JSON.parse(await readBody(request));
+    db.prepare(`
+      UPDATE issues
+      SET venio_category_manual = ?, venio_category_final = ?, updated_at = ?
+      WHERE id = ?
+    `).run(body.category || null, body.category || 'Uncategorized', new Date().toISOString(), Number(categoryMatch[1]));
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  const noteMatch = url.pathname.match(/^\/api\/issues\/(\d+)\/notes$/);
+  if (request.method === 'POST' && noteMatch) {
+    const body = JSON.parse(await readBody(request));
+    if (String(body.note ?? '').trim()) {
+      db.prepare('INSERT INTO issue_notes (issue_id, note, created_at) VALUES (?, ?, ?)')
+        .run(Number(noteMatch[1]), String(body.note).trim(), new Date().toISOString());
+    }
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  json(response, 404, { error: 'Not found' });
+}
+
+migrate();
+
+if (!getBatches().length && existsSync(samplePath)) {
+  const content = readFileSync(samplePath, 'utf8');
+  importCsvContent('tickets_export_with_dates - Tickets.csv', content);
+}
+
+createServer((request, response) => {
+  if (request.url.startsWith('/api/')) {
+    handleApi(request, response).catch((error) => {
+      console.error(error);
+      json(response, 500, { error: error.message });
+    });
+  } else {
+    serveStatic(request, response);
+  }
+}).listen(port, () => {
+  console.log(`Venio dashboard running at http://localhost:${port}`);
+});
