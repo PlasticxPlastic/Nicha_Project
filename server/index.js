@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, getBatches, getIssues, getRules, getSettings, migrate } from './db.js';
-import { importCsvContent } from './importer.js';
+import { importCsvContent, importJiraCsvContent } from './importer.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -70,6 +70,13 @@ async function handleApi(request, response) {
     return;
   }
 
+  if (request.method === 'POST' && url.pathname === '/api/import-jira') {
+    const body = JSON.parse(await readBody(request));
+    const result = importJiraCsvContent(body.filename ?? 'jira-export.csv', body.content ?? '');
+    json(response, result.ok ? 200 : 400, { ...result, ...bootstrapPayload() });
+    return;
+  }
+
   if (request.method === 'POST' && url.pathname === '/api/settings') {
     const settings = JSON.parse(await readBody(request));
     const statement = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
@@ -130,7 +137,7 @@ async function handleApi(request, response) {
 
 migrate();
 
-if (!getBatches().length && existsSync(samplePath)) {
+if (process.env.AUTO_IMPORT_SAMPLE === 'true' && !getBatches().length && existsSync(samplePath)) {
   const content = readFileSync(samplePath, 'utf8');
   importCsvContent('tickets_export_with_dates - Tickets.csv', content);
 }

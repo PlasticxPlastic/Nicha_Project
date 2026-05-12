@@ -42,6 +42,12 @@ const state = {
   comparison: {
     from: '',
     to: ''
+  },
+  dashboard: {
+    issue_type: '',
+    distribution_grain: 'month',
+    distribution_period: '',
+    resolution_months: []
   }
 };
 
@@ -71,6 +77,7 @@ const labels = {
   'crisp-performance': 'Crisp Chat',
   'etaxgo-issue': 'eTaxgo Issue',
   upload: 'Upload',
+  'jira-upload': 'Jira Import',
   dashboard: 'Executive Briefing',
   board: 'Issue Board',
   table: 'Issue Table',
@@ -98,6 +105,22 @@ const requiredColumns = [
   'Resolved Date (Proxy)',
   'Time to Solve (hrs)',
   'Pending Age (hrs)'
+];
+
+const jiraRequiredColumns = [
+  'Summary',
+  'Issue key',
+  'Issue Type',
+  'Status',
+  'Project name',
+  'Project type',
+  'Priority',
+  'Description',
+  'Custom field (Customer Code)',
+  'Status Category',
+  'Created',
+  'Updated',
+  'Resolved'
 ];
 
 const defaultRules = [
@@ -505,9 +528,73 @@ function averageBy(items, groupField, valueField) {
     .sort((a, b) => b[1] - a[1]);
 }
 
+function monthKey(value) {
+  const date = dateValue(value);
+  if (!date) return 'Unknown';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function quarterKey(value) {
+  const date = dateValue(value);
+  if (!date) return 'Unknown';
+  return `${date.getFullYear()} Q${Math.floor(date.getMonth() / 3) + 1}`;
+}
+
+function periodLabel(key) {
+  if (!key || key === 'Unknown') return 'Unknown';
+  const month = key.match(/^(\d{4})-(\d{2})$/);
+  if (month) {
+    const date = new Date(Number(month[1]), Number(month[2]) - 1, 1);
+    return date.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+  }
+  return key;
+}
+
+function countByPeriod(items, grain = 'month', field = 'report_date') {
+  const counts = new Map();
+  for (const item of items) {
+    const key = grain === 'quarter' ? quarterKey(item[field]) : monthKey(item[field]);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+function periodOptions(items, grain = 'month') {
+  return countByPeriod(items, grain).map(([key]) => key).filter((key) => key !== 'Unknown');
+}
+
+function openIssues(items) {
+  return items.filter((issue) => !isResolved(issue));
+}
+
+function resolutionBucket(issue) {
+  const resolution = norm(issue.issue_resolution).toLowerCase();
+  const status = norm(issue.status).toLowerCase();
+  const category = norm(issue.status_category).toLowerCase();
+  if (resolution.includes('not a bug') || status.includes('not a bug') || status.includes('reject')) return 'Not a Bug';
+  if (resolution.includes('done') || resolution.includes('fixed') || resolution.includes('resolved')) return 'Done';
+  if (isResolved(issue) || status === 'done' || category === 'done') return 'Done';
+  return 'Unresolved/Pending';
+}
+
+function resolutionEntries(items) {
+  const order = ['Done', 'Not a Bug', 'Unresolved/Pending'];
+  const counts = new Map(order.map((label) => [label, 0]));
+  for (const issue of items) {
+    const bucket = resolutionBucket(issue);
+    counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+  }
+  return order.map((label) => [label, counts.get(label) ?? 0]);
+}
+
+function issueTypeOptions(items) {
+  return countBy(items, 'issue_type').map(([type]) => type).filter((type) => type !== '-');
+}
+
 function icon(name) {
   const icons = {
     upload: '&#8593;',
+    'jira-upload': '&#8679;',
     dashboard: '&#9638;',
     board: '&#9636;',
     table: '&#9776;',
@@ -820,7 +907,7 @@ function numberRangeControl(label, minKey, maxKey) {
 function renderShell(content) {
   const latest = state.batches[0];
   const moduleNav = ['home', 'project-dashboard', 'crisp-performance', 'etaxgo-issue'];
-  const venioNav = ['upload', 'dashboard', 'board', 'table', 'settings'];
+  const venioNav = ['upload', 'jira-upload', 'dashboard', 'board', 'table', 'settings'];
   return `
     <div class="shell">
       <aside class="sidebar">
@@ -1082,46 +1169,320 @@ function renderDashboard() {
   `);
 }
 
+function trendDirection(current, previous) {
+  if (!previous && current) return { label: 'New volume', tone: 'watch', value: '+100%' };
+  if (!previous && !current) return { label: 'No movement', tone: 'ok', value: '0%' };
+  const change = ((current - previous) / previous) * 100;
+  const tone = change > 0 ? 'danger' : change < 0 ? 'ok' : '';
+  return {
+    label: change > 0 ? 'Increased vs prior month' : change < 0 ? 'Decreased vs prior month' : 'Flat vs prior month',
+    tone,
+    value: `${change > 0 ? '+' : ''}${change.toFixed(Math.abs(change) >= 10 ? 0 : 1)}%`
+  };
+}
+
+function trendSvg(data) {
+  if (!data.length) return '';
+  const width = 520;
+  const height = 120;
+  const pad = 12;
+  const max = Math.max(1, ...data.map(([, value]) => value));
+  const step = data.length > 1 ? (width - pad * 2) / (data.length - 1) : 0;
+  const points = data.map(([, value], index) => {
+    const x = data.length > 1 ? pad + index * step : width / 2;
+    const y = height - pad - (value / max) * (height - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `
+    <svg class="trend-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Monthly issue volume trend">
+      <polyline points="${points}" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></polyline>
+      ${data.map(([, value], index) => {
+        const [x, y] = points.split(' ')[index].split(',');
+        return `<circle cx="${x}" cy="${y}" r="5"><title>${value} issues</title></circle>`;
+      }).join('')}
+    </svg>
+  `;
+}
+
+function renderMonthlyVolumePanel(items) {
+  const typeOptions = issueTypeOptions(items);
+  const selectedType = state.dashboard.issue_type;
+  const scoped = selectedType ? items.filter((issue) => issue.issue_type === selectedType) : items;
+  const monthly = countByPeriod(scoped, 'month').filter(([key]) => key !== 'Unknown');
+  const max = Math.max(1, ...monthly.map(([, value]) => value));
+  const current = monthly.at(-1)?.[1] ?? 0;
+  const previous = monthly.at(-2)?.[1] ?? 0;
+  const trend = trendDirection(current, previous);
+
+  return `
+    <section class="panel monthly-volume-panel">
+      <div class="panel-title dashboard-panel-title">
+        <div>
+          <h2>Issue Volume by Month</h2>
+          <span>Compare monthly intake and filter by issue type</span>
+        </div>
+        <label class="dashboard-control">
+          <span>Issue Type</span>
+          <select data-dashboard="issue_type">
+            <option value="">All issue types</option>
+            ${typeOptions.map((type) => `<option value="${escapeHtml(type)}" ${selectedType === type ? 'selected' : ''}>${escapeHtml(type)}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <div class="monthly-volume-layout">
+        <div class="monthly-bars" aria-label="Monthly issue volume bars">
+          ${monthly.map(([key, value]) => `
+            <div class="monthly-bar-item">
+              <div class="monthly-bar-track">
+                <div class="monthly-bar-fill" style="height:${Math.max(6, (value / max) * 100)}%"></div>
+              </div>
+              <strong>${value}</strong>
+              <span>${periodLabel(key)}</span>
+            </div>
+          `).join('') || '<div class="subtle">Import Jira data to see monthly trend.</div>'}
+        </div>
+        <div class="trend-card ${trend.tone}">
+          <span>Latest Movement</span>
+          <strong>${escapeHtml(trend.value)}</strong>
+          <small>${escapeHtml(trend.label)}</small>
+          ${trendSvg(monthly)}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function donutSegments(entries) {
+  const colors = ['#0275e0', '#ffc505', '#6bb8ff', '#fb7185', '#8b5cf6', '#22c55e', '#f97316', '#14b8a6', '#64748b', '#dc2626'];
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  if (!total) return { total, background: 'conic-gradient(var(--ink-soft) 0 100%)', legend: [] };
+  let cursor = 0;
+  const segments = entries.map(([label, value], index) => {
+    const start = cursor;
+    const end = cursor + (value / total) * 100;
+    cursor = end;
+    const color = colors[index % colors.length];
+    return { label, value, color, segment: `${color} ${start.toFixed(2)}% ${end.toFixed(2)}%` };
+  });
+  return { total, background: `conic-gradient(${segments.map((item) => item.segment).join(', ')})`, legend: segments };
+}
+
+function renderIssueTypeDistribution(items) {
+  const grain = state.dashboard.distribution_grain === 'quarter' ? 'quarter' : 'month';
+  const options = periodOptions(items, grain);
+  const selected = options.includes(state.dashboard.distribution_period)
+    ? state.dashboard.distribution_period
+    : options.at(-1) ?? '';
+  const scoped = selected ? items.filter((issue) => (grain === 'quarter' ? quarterKey(issue.report_date) : monthKey(issue.report_date)) === selected) : items;
+  const entries = countBy(scoped, 'issue_type').slice(0, 10);
+  const donut = donutSegments(entries);
+
+  return `
+    <section class="panel distribution-panel">
+      <div class="panel-title dashboard-panel-title">
+        <div>
+          <h2>Issue Type Distribution</h2>
+          <span>Donut view by ${grain}</span>
+        </div>
+        <div class="dashboard-controls">
+          <label class="dashboard-control">
+            <span>Group</span>
+            <select data-dashboard="distribution_grain">
+              <option value="month" ${grain === 'month' ? 'selected' : ''}>Month</option>
+              <option value="quarter" ${grain === 'quarter' ? 'selected' : ''}>Quarter</option>
+            </select>
+          </label>
+          <label class="dashboard-control">
+            <span>Period</span>
+            <select data-dashboard="distribution_period">
+              ${options.map((key) => `<option value="${escapeHtml(key)}" ${selected === key ? 'selected' : ''}>${escapeHtml(periodLabel(key))}</option>`).join('')}
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="distribution-layout">
+        <div class="donut-chart" style="--donut:${donut.background}">
+          <div><strong>${donut.total}</strong><span>issues</span></div>
+        </div>
+        <div class="donut-legend">
+          ${donut.legend.map((item) => `
+            <div>
+              <span style="--legend:${item.color}"></span>
+              <strong>${escapeHtml(item.label)}</strong>
+              <small>${item.value} / ${formatPercent(percent(item.value, donut.total))}</small>
+            </div>
+          `).join('') || '<div class="subtle">No issue type data yet.</div>'}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderResolutionRateChart(items) {
+  const monthOptions = periodOptions(items, 'month');
+  const selectedMonths = (state.dashboard.resolution_months ?? []).filter((month) => monthOptions.includes(month));
+  const scoped = selectedMonths.length
+    ? items.filter((issue) => selectedMonths.includes(monthKey(issue.report_date)))
+    : items;
+  const entries = resolutionEntries(scoped);
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  const closed = (entries.find(([label]) => label === 'Done')?.[1] ?? 0)
+    + (entries.find(([label]) => label === 'Not a Bug')?.[1] ?? 0);
+  const colors = {
+    Done: 'var(--green)',
+    'Not a Bug': 'var(--yellow)',
+    'Unresolved/Pending': 'var(--red)'
+  };
+  const scopeLabel = selectedMonths.length
+    ? selectedMonths.map(periodLabel).join(', ')
+    : 'All months';
+
+  return `
+    <div class="panel resolution-rate-panel">
+      <div class="panel-title dashboard-panel-title">
+        <div>
+          <h2>Resolution Rate Chart</h2>
+          <span>${escapeHtml(scopeLabel)} / ${formatPercent(percent(closed, total))} closed or not a bug</span>
+        </div>
+      </div>
+      <div class="resolution-months" aria-label="Filter resolution chart by month">
+        ${monthOptions.map((month) => `
+          <label class="month-toggle">
+            <input type="checkbox" data-dashboard-month value="${escapeHtml(month)}" ${selectedMonths.includes(month) ? 'checked' : ''}>
+            <span>${escapeHtml(periodLabel(month))}</span>
+          </label>
+        `).join('') || '<span class="subtle">Import Jira data to filter by month.</span>'}
+      </div>
+      <div class="resolution-stack" aria-label="Resolution status distribution">
+        ${entries.map(([label, value]) => `
+          <div
+            class="resolution-segment ${slug(label)}"
+            style="width:${total ? Math.max(2, percent(value, total)) : 0}%; --resolution-color:${colors[label]}"
+            title="${escapeHtml(label)}: ${value} issues"
+          ></div>
+        `).join('')}
+      </div>
+      <div class="resolution-cards">
+        ${entries.map(([label, value]) => `
+          <div class="resolution-card ${slug(label)}">
+            <span>${escapeHtml(label)}</span>
+            <strong>${value}</strong>
+            <small>${formatPercent(percent(value, total))} of selected issues</small>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderPeriodDetail(items, grain = 'month') {
+  const rows = countByPeriod(items, grain).filter(([key]) => key !== 'Unknown').map(([key, total]) => {
+    const periodItems = items.filter((issue) => (grain === 'quarter' ? quarterKey(issue.report_date) : monthKey(issue.report_date)) === key);
+    const opened = openIssues(periodItems).length;
+    const high = periodItems.filter(isHighPriority).length;
+    const topType = countBy(periodItems, 'issue_type')[0]?.[0] ?? '-';
+    const topProject = countBy(periodItems, 'project_name')[0]?.[0] ?? '-';
+    return { key, total, opened, high, topType, topProject };
+  });
+
+  return `
+    <section class="panel period-detail-panel">
+      <div class="panel-title">
+        <h2>${grain === 'quarter' ? 'Quarter Detail' : 'Monthly Detail'}</h2>
+        <span>${rows.length} periods</span>
+      </div>
+      <div class="table-wrap compact-table">
+        <table>
+          <thead><tr><th>Period</th><th>Total</th><th>Open</th><th>High Priority</th><th>Top Issue Type</th><th>Top Project</th></tr></thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td><strong>${escapeHtml(periodLabel(row.key))}</strong></td>
+                <td>${row.total}</td>
+                <td>${row.opened}</td>
+                <td>${row.high}</td>
+                <td>${escapeHtml(row.topType)}</td>
+                <td>${escapeHtml(row.topProject)}</td>
+              </tr>
+            `).join('') || '<tr><td colspan="6">No data yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function productFocusHighlights(items) {
+  const pending = openIssues(items);
+  const venioPending = openIssues(venioIssues(items));
+  const topPendingTypes = countBy(pending, 'issue_type').slice(0, 3);
+  const topVenioCategories = countByVenioCategory(venioPending).slice(0, 3);
+  const highPending = pending.filter(isHighPriority);
+  const slowResolved = items
+    .filter((issue) => issue.time_to_solve_hours)
+    .sort((a, b) => number(b.time_to_solve_hours) - number(a.time_to_solve_hours))
+    .slice(0, 3);
+  return [
+    {
+      title: 'Backlog concentration',
+      value: topPendingTypes.map(([type, count]) => `${type} (${count})`).join(', ') || 'No open backlog',
+      hint: 'Product should first review the open issue types CS sees most often.'
+    },
+    {
+      title: 'Venio product focus',
+      value: topVenioCategories.map(([category, count]) => `${category} (${count})`).join(', ') || 'No Venio category concentration',
+      hint: 'Use this as the product-area feedback queue from service issues.'
+    },
+    {
+      title: 'Escalation risk',
+      value: `${highPending.length} high-priority open issue${highPending.length === 1 ? '' : 's'}`,
+      hint: 'High or Highest priority items should be reviewed before broad enhancement work.'
+    },
+    {
+      title: 'Resolution drag',
+      value: slowResolved.map((issue) => `${issue.issue_key} ${number(issue.time_to_solve_hours).toFixed(1)}h`).join(', ') || 'No resolved timing data',
+      hint: 'Slow resolved examples help identify process friction or unclear ownership.'
+    }
+  ];
+}
+
+function renderProductFocusSummary(items) {
+  const highlights = productFocusHighlights(items);
+  return `
+    <section class="panel product-focus-panel">
+      <div class="panel-title">
+        <div>
+          <h2>CS Feedback for Product Focus</h2>
+          <span>Where product should look first based on support signal</span>
+        </div>
+      </div>
+      <div class="focus-grid">
+        ${highlights.map((item) => `
+          <div class="focus-card">
+            <span>${escapeHtml(item.title)}</span>
+            <strong>${escapeHtml(item.value)}</strong>
+            <p>${escapeHtml(item.hint)}</p>
+          </div>
+        `).join('')}
+      </div>
+    </section>
+  `;
+}
+
 function renderExecutiveDashboard() {
   const items = filteredIssues();
   const profile = riskProfile(items);
   const { m } = profile;
   const resolutionRate = formatPercent(percent(m.resolved, m.total));
   const openRate = formatPercent(profile.openRate);
-  const topCategoryShare = formatPercent(percent(profile.topCategory[1], profile.venioCount));
   const latest = state.batches[0];
   const dateRange = latest
     ? `${displayDate(latest.min_report_date) || '-'} to ${displayDate(latest.max_report_date) || '-'}`
     : 'No imported period';
 
   return renderShell(`
-    ${pageHeader('Executive Issue Briefing', 'Chief-ready view of service risk, product focus, and action priorities.')}
+    ${pageHeader('Issue Intelligence Dashboard', 'Monthly and quarterly service issue signal for product focus.')}
     ${filterPanel()}
-    <section class="executive-hero">
-      <div class="executive-readout">
-        <div class="executive-kicker">Leadership Readout</div>
-        <div class="executive-title-row">
-          <h2>${escapeHtml(profile.level)}</h2>
-          <span class="risk-badge ${slug(profile.level)}">${escapeHtml(profile.level)}</span>
-        </div>
-        <p>${escapeHtml(feedbackSummary(items))}</p>
-        <div class="executive-meta">
-          <span>Imported period: <strong>${escapeHtml(dateRange)}</strong></span>
-          <span>Filtered scope: <strong>${m.total}</strong> issues</span>
-          <span>Resolution rate: <strong>${resolutionRate}</strong></span>
-        </div>
-      </div>
-      <div class="decision-panel">
-        <div class="panel-title">
-          <h2>Decision Focus</h2>
-          <span>For weekly leadership review</span>
-        </div>
-        ${insightLine('Venio product area', profile.venioCount ? `${profile.topCategory[0]} (${topCategoryShare})` : 'No Venio issues', profile.venioCount ? `${profile.topCategory[1]} Venio issues concentrated in this area.` : 'Category analysis is scoped only to project_name Venio or VENIO-* issues.', 'brand')}
-        ${insightLine('Aging risk', `${m.pendingCritical} critical`, `${m.pendingWarning} pending issues exceed ${state.settings.pending_warning_hours}h; ${m.pendingCritical} exceed ${state.settings.pending_critical_hours}h.`, m.pendingCritical ? 'danger' : 'ok')}
-        ${insightLine('Priority queue', `${profile.highPending} high-priority pending`, 'CS and product owners should review these before broad backlog work.', profile.highPending ? 'danger' : 'ok')}
-        ${insightLine('Venio category quality', `${profile.uncategorized} uncategorized`, `${profile.venioCount} Venio issues in scope; other projects are excluded from category analysis.`, profile.uncategorized ? 'watch' : 'ok')}
-      </div>
-    </section>
     <section class="executive-kpis">
       ${executiveKpi('Total Issues', m.total, 'Current filtered dataset')}
       ${executiveKpi('Open Backlog', m.open, `${openRate} of all issues`, m.open ? 'watch' : 'ok')}
@@ -1130,26 +1491,33 @@ function renderExecutiveDashboard() {
       ${executiveKpi('Avg Pending Age', `${m.avgPending.toFixed(1)}h`, 'Open issues only', m.avgPending > settingNumber('pending_warning_hours') ? 'watch' : '')}
       ${executiveKpi('Top Customer Impact', profile.topCustomer[0], `${profile.topCustomer[1]} issue${profile.topCustomer[1] === 1 ? '' : 's'}`)}
     </section>
-    <section class="dashboard-grid">
-      ${chart('Backlog Flow', countBy(items, 'status_category'), { caption: 'Where work sits now' })}
-      ${chart('Venio Product Area Concentration', countByVenioCategory(items), { caption: 'Venio project only', limit: 7 })}
-      ${renderTopPending(items)}
-      ${chart('Priority Mix', countBy(items, 'priority'), { caption: `${m.high} high-priority total` })}
-      ${chart('Customer Impact', knownAccountCount(items), { caption: 'Largest affected accounts', limit: 7 })}
-      ${renderCategoryPriorities(items)}
-      ${chart('Reported Trend', countByDate(items, 'report_date'), { caption: 'Issue intake by date', limit: 10 })}
-      ${chart('Venio Resolution Drag by Category', averageBy(venioIssues(items), 'venio_category_final', 'time_to_solve_hours'), { decimals: 1, unit: 'h', caption: 'Venio project only', limit: 7 })}
-      ${renderComparison(items)}
+    <section class="dashboard-main-grid">
+      ${renderMonthlyVolumePanel(items)}
+      ${renderIssueTypeDistribution(items)}
+    </section>
+    ${renderProductFocusSummary(items)}
+    <section class="period-detail-grid">
+      ${renderPeriodDetail(items, 'month')}
+      ${renderPeriodDetail(items, 'quarter')}
     </section>
     <section class="deep-dive">
-      <div class="section-label">Analyst Appendix</div>
-      <div class="grid-3">
-        ${chart('Issues by Issue Type', countBy(items, 'issue_type'))}
-        ${chart('Issues by Project Name', countBy(items, 'project_name'))}
-        ${chart('Resolved Trend', countByDate(items, 'resolved_date'), { caption: 'Resolved by date', limit: 10 })}
-        ${chart('Venio Avg Pending Age by Category', averageBy(venioIssues(items).filter((issue) => !isResolved(issue)), 'venio_category_final', 'pending_age_hours'), { decimals: 1, unit: 'h', caption: 'Venio project only', limit: 7 })}
-        ${chart('Slowest Resolved Issues', items.filter((issue) => issue.time_to_solve_hours).sort((a, b) => number(b.time_to_solve_hours) - number(a.time_to_solve_hours)).slice(0, 8).map((issue) => [issue.issue_key, number(issue.time_to_solve_hours)]), { decimals: 1, unit: 'h' })}
-        ${chart('Longest Pending Issues', items.filter((issue) => !isResolved(issue)).sort((a, b) => number(b.pending_age_hours) - number(a.pending_age_hours)).slice(0, 8).map((issue) => [issue.issue_key, number(issue.pending_age_hours)]), { decimals: 1, unit: 'h' })}
+      <div class="section-label">Operational Detail</div>
+      <div class="dashboard-grid">
+        ${chart('Backlog Flow', countBy(items, 'status_category'), { caption: 'Where work sits now' })}
+        ${chart('Issue Types Overall', countBy(items, 'issue_type'), { caption: 'All filtered data' })}
+        ${chart('Priority Mix', countBy(items, 'priority'), { caption: `${m.high} high-priority total` })}
+        ${renderResolutionRateChart(items)}
+        ${renderTopPending(items)}
+        ${chart('Customer Impact', knownAccountCount(items), { caption: 'Largest affected accounts', limit: 7 })}
+      </div>
+    </section>
+    <section class="panel deep-dive-summary">
+      <div class="section-label">Leadership Readout</div>
+      <p class="report-summary">${escapeHtml(feedbackSummary(items))}</p>
+      <div class="executive-meta">
+        <span>Imported period: <strong>${escapeHtml(dateRange)}</strong></span>
+        <span>Filtered scope: <strong>${m.total}</strong> issues</span>
+        <span>Resolution rate: <strong>${resolutionRate}</strong></span>
       </div>
     </section>
   `);
@@ -1387,20 +1755,30 @@ function sortableTh(label, sortKey) {
 function renderUpload() {
   const latest = state.batches[0];
   return renderShell(`
-    ${pageHeader('CSV Upload', 'Import Venio issue CSV files and keep local upload history.')}
+    ${pageHeader('Normalized CSV Upload', 'Import prepared dashboard CSV files with calculated report dates and aging fields.')}
     <section class="grid-2">
       <div class="panel">
         <div class="upload-box">
           <div>
-            <h2>Select Venio CSV</h2>
-            <p class="subtle">Required columns are validated before saving to SQLite.</p>
-            <p><input type="file" accept=".csv,text/csv" data-action="csv-file"></p>
-            <button class="button primary" data-action="upload-csv">Upload CSV</button>
+            <h2>Select Prepared Dashboard CSV</h2>
+            <p class="subtle">Use this page when your file already has Report Date, Last Updated Date, Resolved Date, Time to Solve, and Pending Age columns.</p>
+            <p><input type="file" accept=".csv,text/csv" data-action="csv-file" multiple></p>
+            <button class="button primary" data-action="upload-csv">Upload CSV Files</button>
           </div>
         </div>
       </div>
       <div class="panel">
-        <h2>Latest Import</h2>
+        <h2>Example File Shape</h2>
+        ${importExample('Prepared dashboard CSV', [
+          ['Use this for', 'tickets_export_with_dates or manually prepared issue CSV'],
+          ['Date columns', 'Report Date, Last Updated Date, Resolved Date (Proxy)'],
+          ['Aging columns', 'Time to Solve (hrs), Pending Age (hrs)'],
+          ['Best when', 'Data is already cleaned for this dashboard']
+        ])}
+      </div>
+    </section>
+    <section class="panel" style="margin-top:12px">
+      <h2>Latest Import</h2>
         ${latest ? `
           <div class="detail-grid" style="margin-top:10px">
             <div class="field"><span>Filename</span><p>${escapeHtml(latest.filename)}</p></div>
@@ -1413,6 +1791,57 @@ function renderUpload() {
             <div class="field"><span>Max Report Date</span><p>${formatDate(latest.max_report_date)}</p></div>
           </div>
         ` : '<p class="subtle">No imports yet.</p>'}
+    </section>
+    <section class="panel" style="margin-top:12px">
+      <h2>Upload History</h2>
+      ${historyTable()}
+    </section>
+  `);
+}
+
+function renderJiraUpload() {
+  const latest = state.batches[0];
+  return renderShell(`
+    ${pageHeader('Raw Jira Import', 'Import Jira issue exports directly from Venio or eTaxGo and calculate dashboard fields automatically.')}
+    <section class="grid-2">
+      <div class="panel">
+        <div class="upload-box">
+          <div>
+            <h2>Select Raw Jira CSV</h2>
+            <p class="subtle">Use this page for files like Jira_Venio_April.csv, Jira_Venio_May.csv, Jira_eTax_April.csv, and Jira_eTax_May.csv.</p>
+            <p><input type="file" accept=".csv,text/csv" data-action="jira-file" multiple></p>
+            <button class="button primary" data-action="upload-jira-csv">Import Jira CSV Files</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Example File Shape</h2>
+        ${importExample('Raw Jira export CSV', [
+          ['Use this for', 'Jira exports downloaded directly from Jira'],
+          ['Date columns', 'Created, Updated, Resolved'],
+          ['Resolution field', 'Resolution is used for Done vs Not a Bug charting'],
+          ['Calculated by app', 'Report Date, Last Updated Date, Resolved Date, Time to Solve, Pending Age'],
+          ['Repeated headers', 'Attachment, Labels, Watchers, Comment are safely ignored unless needed']
+        ])}
+      </div>
+    </section>
+    <section class="grid-2" style="margin-top:12px">
+      <div class="panel">
+        <h2>Required Jira Columns</h2>
+        <div class="chip-row import-chip-row">
+          ${jiraRequiredColumns.map((column) => `<span class="chip">${escapeHtml(column)}</span>`).join('')}
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Latest Import</h2>
+        ${latest ? `
+          <div class="detail-grid" style="margin-top:10px">
+            <div class="field"><span>Filename</span><p>${escapeHtml(latest.filename)}</p></div>
+            <div class="field"><span>Imported</span><p>${formatDate(latest.imported_at)}</p></div>
+            <div class="field"><span>Total Rows</span><p>${latest.total_rows}</p></div>
+            <div class="field"><span>Valid Rows</span><p>${latest.valid_rows}</p></div>
+          </div>
+        ` : '<p class="subtle">No imports yet.</p>'}
       </div>
     </section>
     <section class="panel" style="margin-top:12px">
@@ -1420,6 +1849,15 @@ function renderUpload() {
       ${historyTable()}
     </section>
   `);
+}
+
+function importExample(title, rows) {
+  return `
+    <div class="detail-list import-example-list">
+      <div class="detail-item full"><span>File type</span><strong>${escapeHtml(title)}</strong></div>
+      ${rows.map(([label, value]) => `<div class="detail-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('')}
+    </div>
+  `;
 }
 
 function historyTable() {
@@ -1593,6 +2031,7 @@ function render() {
     'crisp-performance': 'Crisp Chat Performance | Customer Service Team Hub',
     'etaxgo-issue': 'eTaxGo Issue | Customer Service Team Hub',
     upload: 'Venio Issue Upload | Customer Service Team Hub',
+    'jira-upload': 'Raw Jira Import | Customer Service Team Hub',
     dashboard: 'Venio Issue Dashboard | Customer Service Team Hub',
     board: 'Venio Issue Board | Customer Service Team Hub',
     table: 'Venio Issue Table | Customer Service Team Hub',
@@ -1607,6 +2046,7 @@ function render() {
     'crisp-performance': () => renderPlaceholder('Crisp Chat Performance', 'Not yet available.'),
     'etaxgo-issue': () => renderPlaceholder('eTaxgo Issue', 'Not configured yet.'),
     upload: renderUpload,
+    'jira-upload': renderJiraUpload,
     dashboard: renderExecutiveDashboard,
     board: renderBoard,
     table: renderTable,
@@ -1769,10 +2209,84 @@ function numberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function importClientCsv(filename, content) {
+function dateOrNull(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const jiraDate = text.match(/^(\d{1,2})\/([A-Za-z]{3})\/(\d{2,4})\s+(\d{1,2}):(\d{2})\s+(AM|PM)$/i);
+  if (jiraDate) {
+    const [, day, monthText, yearText, hourText, minuteText, meridiem] = jiraDate;
+    const month = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(monthText.toLowerCase());
+    const year = Number(yearText.length === 2 ? `20${yearText}` : yearText);
+    let hour = Number(hourText) % 12;
+    if (meridiem.toUpperCase() === 'PM') hour += 12;
+    const parsedJiraDate = new Date(year, month, Number(day), hour, Number(minuteText));
+    return Number.isNaN(parsedJiraDate.getTime()) ? null : parsedJiraDate;
+  }
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isoOrNull(value) {
+  return dateOrNull(value)?.toISOString() ?? null;
+}
+
+function hoursBetween(startValue, endValue) {
+  const start = dateOrNull(startValue);
+  const end = dateOrNull(endValue);
+  if (!start || !end || end < start) return null;
+  return Number(((end.getTime() - start.getTime()) / 36e5).toFixed(1));
+}
+
+function normalizedIssueFromRow(row) {
+  return {
+    summary: emptyToNull(row.Summary),
+    issue_key: emptyToNull(row['Issue key']),
+    issue_type: emptyToNull(row['Issue Type']),
+    status: emptyToNull(row.Status),
+    issue_resolution: emptyToNull(row.Resolution),
+    project_name: emptyToNull(row['Project name']),
+    project_type: emptyToNull(row['Project type']),
+    priority: emptyToNull(row.Priority),
+    description: emptyToNull(row.Description),
+    customer_code: emptyToNull(row['Custom field (Customer Code)']),
+    status_category: emptyToNull(row['Status Category']) ?? 'Other',
+    report_date: emptyToNull(row['Report Date']),
+    last_updated_date: emptyToNull(row['Last Updated Date']),
+    resolved_date: emptyToNull(row['Resolved Date (Proxy)']),
+    time_to_solve_hours: numberOrNull(row['Time to Solve (hrs)']),
+    pending_age_hours: numberOrNull(row['Pending Age (hrs)'])
+  };
+}
+
+function jiraIssueFromRow(row, importedAt = new Date().toISOString()) {
+  const created = emptyToNull(row.Created);
+  const updated = emptyToNull(row.Updated);
+  const resolved = emptyToNull(row.Resolved);
+  return {
+    summary: emptyToNull(row.Summary),
+    issue_key: emptyToNull(row['Issue key']),
+    issue_type: emptyToNull(row['Issue Type']),
+    status: emptyToNull(row.Status),
+    issue_resolution: emptyToNull(row.Resolution),
+    project_name: emptyToNull(row['Project name']),
+    project_type: emptyToNull(row['Project type']),
+    priority: emptyToNull(row.Priority),
+    description: emptyToNull(row.Description),
+    customer_code: emptyToNull(row['Custom field (Customer Code)']),
+    status_category: emptyToNull(row['Status Category']) ?? 'Other',
+    report_date: isoOrNull(created),
+    last_updated_date: isoOrNull(updated),
+    resolved_date: isoOrNull(resolved),
+    time_to_solve_hours: resolved ? hoursBetween(created, resolved) : null,
+    pending_age_hours: resolved ? null : hoursBetween(created, importedAt)
+  };
+}
+
+function importClientCsv(filename, content, format = 'normalized') {
   const store = loadClientStore();
   const { headers, records } = parseCsvText(content);
-  const missingColumns = requiredColumns.filter((column) => !headers.includes(column));
+  const required = format === 'jira' ? jiraRequiredColumns : requiredColumns;
+  const missingColumns = required.filter((column) => !headers.includes(column));
   if (missingColumns.length) {
     const error = new Error(`Missing columns: ${missingColumns.join(', ')}`);
     error.status = 400;
@@ -1784,23 +2298,7 @@ function importClientCsv(filename, content) {
   let skippedRows = 0;
 
   for (const row of records) {
-    const issue = {
-      summary: emptyToNull(row.Summary),
-      issue_key: emptyToNull(row['Issue key']),
-      issue_type: emptyToNull(row['Issue Type']),
-      status: emptyToNull(row.Status),
-      project_name: emptyToNull(row['Project name']),
-      project_type: emptyToNull(row['Project type']),
-      priority: emptyToNull(row.Priority),
-      description: emptyToNull(row.Description),
-      customer_code: emptyToNull(row['Custom field (Customer Code)']),
-      status_category: emptyToNull(row['Status Category']) ?? 'Other',
-      report_date: emptyToNull(row['Report Date']),
-      last_updated_date: emptyToNull(row['Last Updated Date']),
-      resolved_date: emptyToNull(row['Resolved Date (Proxy)']),
-      time_to_solve_hours: numberOrNull(row['Time to Solve (hrs)']),
-      pending_age_hours: numberOrNull(row['Pending Age (hrs)'])
-    };
+    const issue = format === 'jira' ? jiraIssueFromRow(row, now) : normalizedIssueFromRow(row);
     if (!issue.issue_key) {
       skippedRows += 1;
     } else {
@@ -1864,6 +2362,7 @@ async function clientApi(path, options = {}) {
 
   if (method === 'GET' && path === '/api/bootstrap') return clientBootstrap(store);
   if (method === 'POST' && path === '/api/import') return importClientCsv(body.filename ?? 'upload.csv', body.content ?? '');
+  if (method === 'POST' && path === '/api/import-jira') return importClientCsv(body.filename ?? 'jira-export.csv', body.content ?? '', 'jira');
   if (method === 'POST' && path === '/api/settings') {
     store.settings = { ...store.settings, ...Object.fromEntries(Object.entries(body).map(([key, value]) => [key, String(value)])) };
     return clientBootstrap(store);
@@ -2041,12 +2540,13 @@ function summaryRows(items) {
 
 function issueRows(items) {
   return [
-    ['Issue key', 'Summary', 'Issue Type', 'Status', 'Project name', 'Project type', 'Priority', 'Description', 'Customer Code', 'Status Category', 'Report Date', 'Last Updated Date', 'Resolved Date', 'Time to Solve', 'Pending Age', 'Venio Category', 'Confidence', 'Threshold'],
+    ['Issue key', 'Summary', 'Issue Type', 'Status', 'Resolution', 'Project name', 'Project type', 'Priority', 'Description', 'Customer Code', 'Status Category', 'Report Date', 'Last Updated Date', 'Resolved Date', 'Time to Solve', 'Pending Age', 'Venio Category', 'Confidence', 'Threshold'],
     ...items.map((issue) => [
       issue.issue_key,
       issue.summary,
       issue.issue_type,
       issue.status,
+      issue.issue_resolution,
       issue.project_name,
       issue.project_type,
       issue.priority,
@@ -2139,7 +2639,11 @@ app.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'upload-csv') {
-      uploadCsv();
+      uploadCsv('normalized');
+      return;
+    }
+    if (action === 'upload-jira-csv') {
+      uploadCsv('jira');
       return;
     }
     if (action === 'save-settings') {
@@ -2294,24 +2798,46 @@ app.addEventListener('change', (event) => {
     state.comparison[target.dataset.comparison] = target.value;
     render();
   }
+  if (target.matches('[data-dashboard]')) {
+    const key = target.dataset.dashboard;
+    state.dashboard[key] = target.multiple
+      ? [...target.selectedOptions].map((option) => option.value)
+      : target.value;
+    if (key === 'distribution_grain') state.dashboard.distribution_period = '';
+    render();
+  }
+  if (target.matches('[data-dashboard-month]')) {
+    state.dashboard.resolution_months = [...app.querySelectorAll('[data-dashboard-month]:checked')]
+      .map((input) => input.value);
+    render();
+  }
 });
 
-async function uploadCsv() {
-  const input = app.querySelector('[data-action="csv-file"]');
-  const file = input?.files?.[0];
-  if (!file) return toast('Select a CSV file first.');
-  const content = await file.text();
+async function uploadCsv(format = 'normalized') {
+  const input = app.querySelector(format === 'jira' ? '[data-action="jira-file"]' : '[data-action="csv-file"]');
+  const files = [...(input?.files ?? [])];
+  if (!files.length) return toast('Select one or more CSV files first.');
+  const endpoint = format === 'jira' ? '/api/import-jira' : '/api/import';
+  let latestPayload = null;
+  const results = [];
   try {
-    const payload = await api('/api/import', {
-      method: 'POST',
-      body: JSON.stringify({ filename: file.name, content })
-    });
-    applyBootstrap(payload);
+    for (const file of files) {
+      const content = await file.text();
+      const payload = await api(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ filename: file.name, content })
+      });
+      latestPayload = payload;
+      results.push({ file: file.name, validRows: payload.validRows ?? 0, skippedRows: payload.skippedRows ?? 0 });
+    }
+    if (latestPayload) applyBootstrap(latestPayload);
     state.view = 'dashboard';
-    toast(`Imported ${payload.validRows} rows. Skipped ${payload.skippedRows}.`);
+    const importedRows = results.reduce((sum, result) => sum + result.validRows, 0);
+    const skippedRows = results.reduce((sum, result) => sum + result.skippedRows, 0);
+    toast(`Imported ${files.length} file${files.length === 1 ? '' : 's'} / ${importedRows} rows. Skipped ${skippedRows}.`);
     render();
   } catch (error) {
-    toast(`Import failed: ${error.message}`);
+    toast(`Import failed after ${results.length} file${results.length === 1 ? '' : 's'}: ${error.message}`);
     render();
   }
 }

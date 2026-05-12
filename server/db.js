@@ -31,6 +31,7 @@ export function migrate() {
       summary TEXT,
       issue_type TEXT,
       status TEXT,
+      issue_resolution TEXT,
       status_category TEXT,
       project_name TEXT,
       project_type TEXT,
@@ -75,6 +76,11 @@ export function migrate() {
       active INTEGER NOT NULL DEFAULT 1
     );
   `);
+
+  const issueColumns = db.prepare('PRAGMA table_info(issues)').all().map((column) => column.name);
+  if (!issueColumns.includes('issue_resolution')) {
+    db.exec('ALTER TABLE issues ADD COLUMN issue_resolution TEXT');
+  }
 
   const defaults = {
     pending_warning_hours: '36',

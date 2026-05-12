@@ -848,6 +848,389 @@ body.dark .issue-card:hover {
   gap: 12px;
 }
 
+.dashboard-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.82fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.dashboard-panel-title {
+  align-items: flex-start;
+}
+
+.dashboard-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dashboard-control {
+  display: grid;
+  gap: 5px;
+  min-width: 156px;
+}
+
+.dashboard-control span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.monthly-volume-panel,
+.distribution-panel,
+.product-focus-panel,
+.period-detail-panel {
+  padding: 16px;
+}
+
+.monthly-volume-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.monthly-bars {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(82px, 1fr);
+  align-items: end;
+  gap: 10px;
+  min-height: 230px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel-soft) 62%, var(--panel));
+  padding: 14px;
+}
+
+.monthly-bar-item {
+  display: grid;
+  grid-template-rows: 1fr auto auto;
+  align-items: end;
+  gap: 7px;
+  min-width: 74px;
+  height: 100%;
+  text-align: center;
+}
+
+.monthly-bar-track {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  height: 150px;
+  border-radius: var(--radius-sm);
+  background: var(--ink-soft);
+  overflow: hidden;
+}
+
+.monthly-bar-fill {
+  width: 100%;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: linear-gradient(180deg, var(--brand), var(--brand-strong));
+  box-shadow: 0 -10px 24px color-mix(in srgb, var(--brand) 24%, transparent);
+}
+
+.monthly-bar-item strong {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.monthly-bar-item span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.trend-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--brand-soft) 34%, var(--panel));
+  padding: 14px;
+}
+
+.trend-card span,
+.trend-card small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trend-card strong {
+  color: var(--text);
+  font-size: 34px;
+  line-height: 1;
+}
+
+.trend-card.ok strong {
+  color: var(--green);
+}
+
+.trend-card.danger strong {
+  color: var(--red);
+}
+
+.trend-svg {
+  width: 100%;
+  min-height: 92px;
+  color: var(--brand);
+  margin-top: 6px;
+}
+
+.trend-svg circle {
+  fill: var(--panel);
+  stroke: currentColor;
+  stroke-width: 3;
+}
+
+.distribution-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.donut-chart {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 180px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--donut);
+  box-shadow: inset 0 0 0 1px var(--line), var(--shadow-soft);
+}
+
+.donut-chart::after {
+  content: "";
+  position: absolute;
+  inset: 31px;
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.donut-chart > div {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+}
+
+.donut-chart strong {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.donut-chart span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.donut-legend {
+  display: grid;
+  gap: 8px;
+}
+
+.donut-legend div {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.donut-legend div > span {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--legend);
+}
+
+.donut-legend strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.donut-legend small {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.resolution-rate-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.resolution-months {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  max-height: 96px;
+  overflow: auto;
+}
+
+.month-toggle {
+  position: relative;
+}
+
+.month-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.month-toggle span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 31px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-soft) 74%, var(--panel));
+  color: var(--muted);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.month-toggle input:checked + span {
+  border-color: color-mix(in srgb, var(--brand) 62%, var(--line));
+  background: color-mix(in srgb, var(--brand-soft) 54%, var(--panel));
+  color: var(--brand-strong);
+}
+
+.month-toggle input:focus-visible + span {
+  outline: 3px solid color-mix(in srgb, var(--brand) 28%, transparent);
+  outline-offset: 2px;
+}
+
+.resolution-stack {
+  display: flex;
+  width: 100%;
+  min-height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--ink-soft);
+  overflow: hidden;
+}
+
+.resolution-segment {
+  min-height: 100%;
+  background: var(--resolution-color);
+}
+
+.resolution-segment + .resolution-segment {
+  border-left: 2px solid var(--panel);
+}
+
+.resolution-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.resolution-card {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel-soft) 64%, var(--panel));
+  padding: 10px;
+}
+
+.resolution-card span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 820;
+  text-transform: uppercase;
+}
+
+.resolution-card strong {
+  color: var(--text);
+  font-size: 26px;
+  line-height: 1;
+}
+
+.resolution-card small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.resolution-card.done {
+  border-color: color-mix(in srgb, var(--green) 36%, var(--line));
+}
+
+.resolution-card.not-a-bug {
+  border-color: color-mix(in srgb, var(--yellow) 42%, var(--line));
+}
+
+.resolution-card.unresolved-pending {
+  border-color: color-mix(in srgb, var(--red) 32%, var(--line));
+}
+
+.focus-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.focus-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel-soft) 62%, var(--panel));
+  padding: 12px;
+}
+
+.focus-card span {
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.focus-card strong {
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.focus-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.period-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.compact-table {
+  margin-top: 12px;
+}
+
+.compact-table table {
+  min-width: 760px;
+}
+
+.deep-dive-summary {
+  margin-top: 12px;
+  padding: 16px;
+}
+
 .dashboard-grid > .panel {
   min-height: 286px;
 }
@@ -1454,6 +1837,10 @@ table {
   border-collapse: collapse;
 }
 
+.compact-table table {
+  min-width: 760px;
+}
+
 th,
 td {
   border-bottom: 1px solid var(--line);
@@ -1928,6 +2315,16 @@ tbody tr:nth-child(even) td {
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.import-example-list .detail-item strong {
+  white-space: normal;
+}
+
+.import-chip-row {
+  border-top: 0;
+  margin-top: 12px;
+  padding-top: 0;
 }
 
 .current-category {
@@ -2575,13 +2972,16 @@ body.dark .module-icon {
   }
 
   .executive-hero,
-  .modal-layout {
+  .modal-layout,
+  .dashboard-main-grid {
     grid-template-columns: 1fr;
   }
 
   .module-grid,
   .executive-kpis,
   .dashboard-grid,
+  .focus-grid,
+  .period-detail-grid,
   .grid-3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2647,7 +3047,13 @@ body.dark .module-icon {
   .filter-section-grid.two,
   .filter-section-grid.three,
   .executive-kpis,
+  .resolution-cards,
   .dashboard-grid,
+  .dashboard-main-grid,
+  .monthly-volume-layout,
+  .distribution-layout,
+  .focus-grid,
+  .period-detail-grid,
   .grid-2,
   .grid-3,
   .detail-grid,
