@@ -87,6 +87,18 @@ export function migrate() {
   const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [key, value] of Object.entries(defaults)) insertSetting.run(key, value);
 
+  db.prepare(`
+    UPDATE issues
+    SET
+      venio_category_auto = NULL,
+      venio_category_manual = NULL,
+      venio_category_final = NULL,
+      category_confidence = NULL,
+      category_rule = NULL
+    WHERE LOWER(TRIM(COALESCE(project_name, ''))) <> 'venio'
+      AND UPPER(TRIM(COALESCE(issue_key, ''))) NOT LIKE 'VENIO-%'
+  `).run();
+
   const ruleCount = db.prepare('SELECT COUNT(*) AS count FROM category_keyword_rules').get().count;
   if (!ruleCount) {
     const insertRule = db.prepare(`

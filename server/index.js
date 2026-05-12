@@ -40,6 +40,11 @@ function bootstrapPayload() {
   };
 }
 
+function isVenioIssue(issue) {
+  return String(issue?.project_name ?? '').trim().toLowerCase() === 'venio'
+    || String(issue?.issue_key ?? '').trim().toUpperCase().startsWith('VENIO-');
+}
+
 function serveStatic(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const cleanPath = decodeURIComponent(url.pathname).replace(/^\/+/, '');
@@ -94,11 +99,17 @@ async function handleApi(request, response) {
   const categoryMatch = url.pathname.match(/^\/api\/issues\/(\d+)\/category$/);
   if (request.method === 'POST' && categoryMatch) {
     const body = JSON.parse(await readBody(request));
+    const issueId = Number(categoryMatch[1]);
+    const issue = db.prepare('SELECT issue_key, project_name FROM issues WHERE id = ?').get(issueId);
+    if (!isVenioIssue(issue)) {
+      json(response, 400, { error: 'Venio category applies only to Venio issues.' });
+      return;
+    }
     db.prepare(`
       UPDATE issues
       SET venio_category_manual = ?, venio_category_final = ?, updated_at = ?
       WHERE id = ?
-    `).run(body.category || null, body.category || 'Uncategorized', new Date().toISOString(), Number(categoryMatch[1]));
+    `).run(body.category || null, body.category || 'Uncategorized', new Date().toISOString(), issueId);
     json(response, 200, bootstrapPayload());
     return;
   }

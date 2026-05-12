@@ -11,7 +11,6 @@ const state = {
   openFilter: '',
   openDatePicker: '',
   datePickerMonth: '',
-  showModalDescription: false,
   lastShellHtml: '',
   activePreset: '',
   toast: '',
@@ -37,7 +36,8 @@ const state = {
     pending_max: '',
     solve_min: '',
     solve_max: '',
-    sort: 'newest'
+    sort: 'newest',
+    sort_dir: 'desc'
   },
   comparison: {
     from: '',
@@ -70,15 +70,15 @@ const labels = {
   'project-dashboard': 'Project Dashboard',
   'crisp-performance': 'Crisp Chat',
   'etaxgo-issue': 'eTaxgo Issue',
-  upload: 'Upload / นำเข้า',
-  dashboard: 'Dashboard / ภาพรวม',
-  board: 'Board / กระดาน',
-  table: 'Issue Table / ตาราง',
-  settings: 'Settings / ตั้งค่า'
+  upload: 'Upload',
+  dashboard: 'Executive Briefing',
+  board: 'Issue Board',
+  table: 'Issue Table',
+  settings: 'Settings'
 };
 
 const brandAssets = {
-  venio: 'https://www.veniocrm.com/wp-content/uploads/2021/08/Venio-Full.png',
+  venio: './assets/venio-full.png',
   etaxgo: 'https://www.etaxgo.com/wp-content/uploads/2025/03/eTaxGo-Logo-2025.png'
 };
 
@@ -229,6 +229,36 @@ function isHighPriority(issue) {
   return ['high', 'highest', 'critical'].includes(norm(issue.priority).toLowerCase());
 }
 
+function isVenioIssue(issue) {
+  return norm(issue.project_name).toLowerCase() === 'venio' || norm(issue.issue_key).toUpperCase().startsWith('VENIO-');
+}
+
+function venioIssues(items) {
+  return items.filter(isVenioIssue);
+}
+
+function categoryForIssue(issue, fallback = '-') {
+  if (!isVenioIssue(issue)) return fallback;
+  return norm(issue.venio_category_final) || 'Uncategorized';
+}
+
+function categoryConfidenceForIssue(issue) {
+  return isVenioIssue(issue) ? norm(issue.category_confidence) || '-' : '-';
+}
+
+function categoryRuleForIssue(issue) {
+  return isVenioIssue(issue) ? norm(issue.category_rule) || '-' : '-';
+}
+
+function countByVenioCategory(items) {
+  const counts = new Map();
+  for (const issue of venioIssues(items)) {
+    const key = categoryForIssue(issue, 'Uncategorized');
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
 function pendingLevel(issue) {
   if (isResolved(issue)) return '';
   const pending = number(issue.pending_age_hours);
@@ -247,6 +277,9 @@ function priorityRank(priority) {
 }
 
 function unique(field) {
+  if (field === 'venio_category_final') {
+    return countByVenioCategory(state.issues).map(([category]) => category);
+  }
   return [...new Set(state.issues.map((issue) => norm(issue[field])).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
@@ -278,19 +311,19 @@ function filteredIssues() {
       'status',
       'status_category',
       'priority',
-      'customer_code',
-      'venio_category_final'
+      'customer_code'
     ];
     for (const field of fields) {
       if (f[field].length && !f[field].includes(norm(issue[field]))) return false;
     }
+    if (f.venio_category_final.length && !f.venio_category_final.includes(categoryForIssue(issue, ''))) return false;
     if (search) {
       const haystack = [
         issue.issue_key,
         issue.summary,
         issue.description,
         issue.customer_code,
-        issue.venio_category_final
+        categoryForIssue(issue, '')
       ].join(' ').toLowerCase();
       if (!haystack.includes(search)) return false;
     }
@@ -306,19 +339,44 @@ function filteredIssues() {
     return true;
   });
 
-  const sorters = {
-    newest: (a, b) => (dateValue(b.report_date)?.getTime() ?? 0) - (dateValue(a.report_date)?.getTime() ?? 0),
-    oldest: (a, b) => (dateValue(a.report_date)?.getTime() ?? 0) - (dateValue(b.report_date)?.getTime() ?? 0),
-    pending: (a, b) => number(b.pending_age_hours) - number(a.pending_age_hours),
-    priority: (a, b) => priorityRank(b.priority) - priorityRank(a.priority),
-    solve: (a, b) => number(b.time_to_solve_hours) - number(a.time_to_solve_hours),
-    updated: (a, b) => (dateValue(b.last_updated_date)?.getTime() ?? 0) - (dateValue(a.last_updated_date)?.getTime() ?? 0),
-    customer: (a, b) => norm(a.customer_code).localeCompare(norm(b.customer_code)),
-    type: (a, b) => norm(a.issue_type).localeCompare(norm(b.issue_type)),
-    category: (a, b) => norm(a.venio_category_final).localeCompare(norm(b.venio_category_final))
-  };
-  result = [...result].sort(sorters[f.sort] ?? sorters.newest);
+  result = [...result].sort((a, b) => compareIssues(a, b, f.sort, f.sort_dir));
   return result;
+}
+
+function compareText(a, b) {
+  return norm(a).localeCompare(norm(b), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function compareDates(a, b) {
+  return (dateValue(a)?.getTime() ?? 0) - (dateValue(b)?.getTime() ?? 0);
+}
+
+function compareNumbers(a, b) {
+  return number(a) - number(b);
+}
+
+function compareIssues(a, b, sort, direction = 'asc') {
+  const sorters = {
+    issue_key: () => compareText(a.issue_key, b.issue_key),
+    summary: () => compareText(a.summary, b.summary),
+    customer: () => compareText(a.customer_code, b.customer_code),
+    type: () => compareText(a.issue_type, b.issue_type),
+    priority: () => priorityRank(a.priority) - priorityRank(b.priority),
+    status: () => compareText(a.status, b.status),
+    status_category: () => compareText(a.status_category, b.status_category),
+    category: () => compareText(categoryForIssue(a, ''), categoryForIssue(b, '')),
+    newest: () => compareDates(a.report_date, b.report_date),
+    oldest: () => compareDates(a.report_date, b.report_date),
+    updated: () => compareDates(a.last_updated_date, b.last_updated_date),
+    resolved: () => compareDates(a.resolved_date, b.resolved_date),
+    solve: () => compareNumbers(a.time_to_solve_hours, b.time_to_solve_hours),
+    pending: () => compareNumbers(a.pending_age_hours, b.pending_age_hours)
+  };
+  const baseDirection = sort === 'oldest' ? 'asc' : direction;
+  const effectiveDirection = sort === 'newest' ? 'desc' : baseDirection;
+  const comparison = (sorters[sort] ?? sorters.newest)();
+  if (comparison !== 0) return effectiveDirection === 'desc' ? -comparison : comparison;
+  return compareText(a.issue_key, b.issue_key);
 }
 
 function countBy(items, field) {
@@ -341,6 +399,7 @@ function metrics(items) {
   const resolved = items.filter(isResolved);
   const pendingWarning = open.filter((issue) => number(issue.pending_age_hours) > settingNumber('pending_warning_hours'));
   const pendingCritical = open.filter((issue) => number(issue.pending_age_hours) > settingNumber('pending_critical_hours'));
+  const topVenioCategory = countByVenioCategory(items)[0]?.[0] ?? '-';
   return {
     total: items.length,
     open: open.length,
@@ -353,18 +412,83 @@ function metrics(items) {
     oldestPending: open.sort((a, b) => number(b.pending_age_hours) - number(a.pending_age_hours))[0],
     customer: countBy(items, 'customer_code')[0]?.[0] ?? '-',
     issueType: countBy(items, 'issue_type')[0]?.[0] ?? '-',
-    category: countBy(items, 'venio_category_final')[0]?.[0] ?? '-'
+    category: topVenioCategory
+  };
+}
+
+function percent(value, total) {
+  if (!total) return 0;
+  return (value / total) * 100;
+}
+
+function formatPercent(value) {
+  return `${value.toFixed(value >= 10 ? 0 : 1)}%`;
+}
+
+function topEntry(entries) {
+  return entries[0] ?? ['-', 0];
+}
+
+function cleanCountBy(items, field, fallback = 'Unknown') {
+  const counts = new Map();
+  for (const item of items) {
+    const raw = norm(item[field]);
+    const key = raw && raw !== '-' ? raw : fallback;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function knownAccountCount(items) {
+  const counts = new Map();
+  for (const item of items) {
+    const key = norm(item.customer_code);
+    if (!key || key === '-') continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function riskProfile(items) {
+  const m = metrics(items);
+  const scopedVenioIssues = venioIssues(items);
+  const openRate = percent(m.open, m.total);
+  const criticalRate = percent(m.pendingCritical, Math.max(1, m.open));
+  const highPending = items.filter((issue) => isHighPriority(issue) && !isResolved(issue)).length;
+  const uncategorized = scopedVenioIssues.filter((issue) => categoryForIssue(issue) === 'Uncategorized').length;
+  const topCategory = topEntry(countByVenioCategory(items));
+  const topCustomer = topEntry(knownAccountCount(items));
+  const level = m.pendingCritical > 0 || highPending > 10
+    ? 'Critical attention'
+    : openRate >= 45 || m.pendingWarning > 0
+      ? 'Watch closely'
+      : 'Stable';
+
+  return {
+    m,
+    openRate,
+    criticalRate,
+    highPending,
+    uncategorized,
+    topCategory,
+    topCustomer,
+    venioCount: scopedVenioIssues.length,
+    level
   };
 }
 
 function feedbackSummary(items) {
   const m = metrics(items);
-  const categoriesTop = countBy(items, 'venio_category_final').slice(0, 3).map(([key]) => key);
+  const scopedVenioIssues = venioIssues(items);
+  const categoriesTop = countByVenioCategory(items).slice(0, 3).map(([key]) => key);
   const customersTop = countBy(items, 'customer_code').slice(0, 3).map(([key]) => key);
   const typesTop = countBy(items, 'issue_type').slice(0, 3).map(([key]) => key);
-  const slowAreas = averageBy(items, 'venio_category_final', 'time_to_solve_hours').slice(0, 2).map(([key]) => key);
+  const slowAreas = averageBy(scopedVenioIssues, 'venio_category_final', 'time_to_solve_hours').slice(0, 2).map(([key]) => key);
+  const categorySentence = scopedVenioIssues.length
+    ? `The most common Venio categories are ${categoriesTop.join(', ') || '-'}.`
+    : 'No Venio project issues are in the current filtered scope, so Venio category analysis is not shown.';
 
-  return `This filtered period contains ${m.total} issues. ${m.open} issues are still pending, including ${m.pendingWarning} over ${state.settings.pending_warning_hours} hours and ${m.pendingCritical} over ${state.settings.pending_critical_hours} hours. The most common Venio categories are ${categoriesTop.join(', ') || '-'}. The most affected customers are ${customersTop.join(', ') || '-'}. Common issue types are ${typesTop.join(', ') || '-'}. The product team should prioritize ${categoriesTop.slice(0, 2).join(' and ') || 'the highest-volume areas'}, while CS should review high-priority pending issues first. Slowest resolved areas: ${slowAreas.join(', ') || '-'}.`;
+  return `This filtered period contains ${m.total} issues. ${m.open} issues are still pending, including ${m.pendingWarning} over ${state.settings.pending_warning_hours} hours and ${m.pendingCritical} over ${state.settings.pending_critical_hours} hours. ${categorySentence} The most affected customers are ${customersTop.join(', ') || '-'}. Common issue types are ${typesTop.join(', ') || '-'}. The product team should prioritize ${categoriesTop.slice(0, 2).join(' and ') || 'the highest-volume Venio areas'}, while CS should review high-priority pending issues first. Slowest resolved Venio areas: ${slowAreas.join(', ') || '-'}.`;
 }
 
 function averageBy(items, groupField, valueField) {
@@ -434,16 +558,40 @@ function card(label, value, hint) {
   `;
 }
 
+function executiveKpi(label, value, hint, tone = '') {
+  return `
+    <div class="executive-kpi ${tone}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(hint)}</small>
+    </div>
+  `;
+}
+
+function insightLine(label, value, hint, tone = '') {
+  return `
+    <div class="insight-line ${tone}">
+      <div>
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </div>
+      <p>${escapeHtml(hint)}</p>
+    </div>
+  `;
+}
+
 function chart(title, data, options = {}) {
   const max = Math.max(1, ...data.map(([, value]) => value));
+  const decimals = options.decimals ?? 0;
+  const unit = options.unit ?? '';
   const rows = data.slice(0, options.limit ?? 8).map(([label, value]) => `
     <div class="bar-row">
       <div class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
       <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, (value / max) * 100)}%"></div></div>
-      <strong>${Number(value).toFixed(options.decimals ?? 0)}</strong>
+      <strong>${Number(value).toFixed(decimals)}${unit}</strong>
     </div>
   `).join('');
-  return `<div class="panel chart-panel"><div class="panel-title"><h2>${title}</h2><span>${data.length} groups</span></div><div class="bar-list">${rows || '<div class="subtle">No data</div>'}</div></div>`;
+  return `<div class="panel chart-panel ${options.className ?? ''}"><div class="panel-title"><h2>${title}</h2><span>${escapeHtml(options.caption ?? `${data.length} groups`)}</span></div><div class="bar-list">${rows || '<div class="subtle">No data</div>'}</div></div>`;
 }
 
 function activeFilterChips() {
@@ -457,7 +605,7 @@ function activeFilterChips() {
     status_category: 'Status category',
     priority: 'Priority',
     customer_code: 'Customer',
-    venio_category_final: 'Category'
+    venio_category_final: 'Venio category'
   };
 
   for (const [field, label] of Object.entries(labelsByField)) {
@@ -475,8 +623,6 @@ function activeFilterChips() {
 
 function filterPanel() {
   const advancedFields = [
-    'project_name',
-    'project_type',
     'report_from',
     'report_to',
     'updated_from',
@@ -544,6 +690,8 @@ function filterPanel() {
       </div>
       ${chips.length ? `<div class="chip-row">${chips.slice(0, 8).map((chip) => `<span class="chip">${escapeHtml(chip)}</span>`).join('')}${chips.length > 8 ? `<span class="chip">+${chips.length - 8} more</span>` : ''}</div>` : '<div class="chip-row"><span class="chip muted-chip">No active filters</span></div>'}
       <div class="filter-grid">
+        ${multi('project_name', 'Project')}
+        ${multi('project_type', 'Project Type')}
         ${multi('priority', 'Priority')}
         ${multi('status_category', 'Status Category')}
         ${multi('venio_category_final', 'Venio Category')}
@@ -553,13 +701,6 @@ function filterPanel() {
         <details class="filter-menu wide-filter" ${advancedOpen ? 'open' : ''}>
           <summary><span>More filters</span><strong>Dates</strong></summary>
           <div class="filter-date-popover">
-            <div class="filter-section">
-              <div class="filter-section-title">Project scope</div>
-              <div class="filter-section-grid two">
-                ${multi('project_name', 'Project')}
-                ${multi('project_type', 'Project Type')}
-              </div>
-            </div>
             <div class="filter-section">
               <div class="filter-section-title">Date ranges</div>
               <div class="filter-section-grid three">
@@ -700,12 +841,12 @@ function renderShell(content) {
         <div class="sidebar-card">
           <div class="sidebar-kicker">Latest Dataset</div>
           <strong title="${latest ? escapeHtml(latest.filename) : 'No CSV imported'}">${latest ? escapeHtml(middleEllipsis(latest.filename, 28)) : 'No CSV imported'}</strong>
-          <p>${latest ? `${latest.valid_rows} valid rows · ${formatDate(latest.imported_at)}` : 'Waiting for CSV data'}</p>
+          <p>${latest ? `${latest.valid_rows} valid rows &middot; ${formatDate(latest.imported_at)}` : 'Waiting for CSV data'}</p>
         </div>
       </aside>
       <main class="main">
         <div class="topbar">
-          <div class="crumb">Dashboard / <strong>${labels[state.view]}</strong></div>
+          <div class="crumb">Workspace / <strong>${labels[state.view]}</strong></div>
           <div class="actions">
             <button class="button primary" data-action="print-report">${icon('export')} PDF Report</button>
             <button class="button" data-action="export-excel">${icon('export')} Excel</button>
@@ -739,6 +880,15 @@ function pageHeader(title, hint) {
 
 function renderLanding() {
   const m = metrics(state.issues);
+  const issueCount = state.issues.length;
+  const scopedVenioIssues = venioIssues(state.issues);
+  const venioIssueCount = scopedVenioIssues.length;
+  const venioOpen = metrics(scopedVenioIssues).open;
+  const companyCounts = countBy(state.issues, 'project_name');
+  const companySlides = companyCounts.length ? companyCounts : [['No project data', 0]];
+  const datasetLabel = issueCount
+    ? `${issueCount} total issues loaded`
+    : 'No issues loaded yet';
   const modules = [
     {
       key: 'project-dashboard',
@@ -746,7 +896,9 @@ function renderLanding() {
       title: 'Project Dashboard',
       status: 'Not yet',
       meta: 'Portfolio reporting',
-      action: 'Coming soon'
+      action: 'Coming soon',
+      variant: 'coming-soon',
+      available: false
     },
     {
       key: 'crisp-performance',
@@ -754,7 +906,9 @@ function renderLanding() {
       title: 'Crisp Chat Performance',
       status: 'Not yet',
       meta: 'Support response analytics',
-      action: 'Coming soon'
+      action: 'Coming soon',
+      variant: 'coming-soon',
+      available: false
     },
     {
       key: 'dashboard',
@@ -762,8 +916,11 @@ function renderLanding() {
       brand: 'venio',
       title: 'Venio Issue',
       status: 'Live',
-      meta: `${state.issues.length} issues · ${m.open} pending`,
-      action: 'Open workspace'
+      meta: `${venioIssueCount} Venio issues / ${venioOpen} pending`,
+      description: 'Issue reporting aligned to Venio CRM case, customer, and analytics workflows.',
+      action: 'Open workspace',
+      variant: 'live',
+      available: true
     },
     {
       key: 'etaxgo-issue',
@@ -772,40 +929,96 @@ function renderLanding() {
       title: 'eTaxgo Issue',
       status: 'Not configured',
       meta: 'Issue insight workspace',
-      action: 'Prepare workspace'
+      description: 'Workspace shell is present, but no eTaxgo issue setup is active yet.',
+      action: 'Prepare workspace',
+      variant: 'warning',
+      available: true
     }
   ];
 
   return `
     <main class="landing-shell">
       <header class="landing-top">
-        <div class="brand hub-brand">${brandLogo('venio', 'Venio', 'brand-logo-header')}<span>Insight Hub</span></div>
-        <button class="button" data-view="dashboard">Open Venio Issue</button>
+        <div class="brand hub-brand">
+          ${brandLogo('venio', 'Venio', 'brand-logo-header')}
+          <span>Insight Hub</span>
+        </div>
+        <button class="landing-primary-action" data-view="dashboard" aria-label="Open Venio Issue workspace">Open Venio Issue</button>
       </header>
       <section class="landing-hero">
-        <div>
+        <div class="landing-copy">
           <div class="landing-kicker">Operations Intelligence</div>
           <h1>Choose a workspace</h1>
           <p>One local hub for issue reporting, service quality, and project visibility.</p>
+          <div class="landing-context-pills" aria-label="Venio CRM context">
+            <span>Connecting your customers</span>
+            <span>CRM</span>
+            <span>Case</span>
+            <span>Analytics</span>
+          </div>
         </div>
-        <div class="landing-stat">
-          <span>Active dataset</span>
-          <strong>${state.issues.length}</strong>
-          <small>Venio issues loaded</small>
+        <div class="landing-visual-stack">
+          <aside class="landing-dataset-panel" aria-label="Imported issue dataset summary by company">
+            <div class="dataset-head">
+              <span>Imported dataset</span>
+              <strong>All companies</strong>
+            </div>
+            <div class="dataset-count">${issueCount}</div>
+            <p>${escapeHtml(datasetLabel)}</p>
+            <small>${venioIssueCount} of these are Venio issues. The rest remain visible by company/project.</small>
+            <div class="company-carousel" aria-label="Issue count by company or project">
+              <div class="company-carousel-track">
+                ${[...companySlides, ...companySlides].map(([company, count]) => `
+                  <span>
+                    <strong>${escapeHtml(company || 'Unknown')}</strong>
+                    <small>${count} issue${count === 1 ? '' : 's'}</small>
+                  </span>
+                `).join('')}
+              </div>
+            </div>
+            <div class="dataset-meta">
+              <span class="status-dot live"></span>
+              <span>Live workspace: Venio Issue</span>
+            </div>
+          </aside>
         </div>
       </section>
-      <section class="module-grid">
-        ${modules.map((module) => `
-          <button class="module-card ${module.status === 'Live' ? 'live' : ''} ${module.brand === 'etaxgo' ? 'etaxgo-card' : ''}" data-view="${module.key}">
-            <span class="module-status">${escapeHtml(module.status)}</span>
-            ${module.brand ? brandLogo(module.brand, module.title, 'module-logo') : `<span class="module-icon">${moduleIcon(module.icon)}</span>`}
-            <strong>${escapeHtml(module.title)}</strong>
-            <small>${escapeHtml(module.meta)}</small>
-            <span class="module-action">${escapeHtml(module.action)}</span>
-          </button>
-        `).join('')}
+      <section class="workspace-section" aria-labelledby="workspace-title">
+        <div class="workspace-section-head">
+          <div>
+            <h2 id="workspace-title">Workspaces</h2>
+            <p>Open the live Venio issue workspace or review upcoming modules.</p>
+          </div>
+        </div>
+        <div class="module-grid">
+          ${modules.map(workspaceCard).join('')}
+        </div>
       </section>
     </main>
+  `;
+}
+
+function workspaceCard(module) {
+  const disabledText = !module.available ? 'true' : 'false';
+  const cardLabel = `${module.title}. Status: ${module.status}. ${module.action}.`;
+  return `
+    <button
+      class="module-card ${module.variant}"
+      data-view="${module.key}"
+      data-availability="${module.available ? 'available' : 'coming-soon'}"
+      aria-label="${escapeHtml(cardLabel)}"
+      aria-disabled="${disabledText}">
+      <span class="module-status ${module.variant}">${escapeHtml(module.status)}</span>
+      <span class="module-identity">
+        ${module.brand ? brandLogo(module.brand, module.title, 'module-logo') : `<span class="module-icon">${moduleIcon(module.icon)}</span>`}
+      </span>
+      <span class="module-content">
+        <strong>${escapeHtml(module.title)}</strong>
+        <small>${escapeHtml(module.meta)}</small>
+        ${module.description ? `<em>${escapeHtml(module.description)}</em>` : ''}
+      </span>
+      <span class="module-action ${module.variant}">${escapeHtml(module.action)}</span>
+    </button>
   `;
 }
 
@@ -856,17 +1069,149 @@ function renderDashboard() {
       ${chart('Issues by Status Category', countBy(items, 'status_category'))}
       ${chart('Issues by Priority', countBy(items, 'priority'))}
       ${chart('Issues by Issue Type', countBy(items, 'issue_type'))}
-      ${chart('Issues by Venio Category', countBy(items, 'venio_category_final'))}
+      ${chart('Issues by Venio Category', countByVenioCategory(items), { caption: 'Venio project only' })}
       ${chart('Issues by Customer Code', countBy(items, 'customer_code'))}
       ${chart('Issues by Project Name', countBy(items, 'project_name'))}
       ${chart('Reported Issues Over Time', countByDate(items, 'report_date'))}
       ${chart('Resolved Issues Over Time', countByDate(items, 'resolved_date'))}
-      ${chart('Avg Time to Solve by Category', averageBy(items, 'venio_category_final', 'time_to_solve_hours'), { decimals: 1 })}
-      ${chart('Avg Pending Age by Category', averageBy(items.filter((issue) => !isResolved(issue)), 'venio_category_final', 'pending_age_hours'), { decimals: 1 })}
+      ${chart('Avg Time to Solve by Category', averageBy(venioIssues(items), 'venio_category_final', 'time_to_solve_hours'), { decimals: 1, caption: 'Venio project only' })}
+      ${chart('Avg Pending Age by Category', averageBy(venioIssues(items).filter((issue) => !isResolved(issue)), 'venio_category_final', 'pending_age_hours'), { decimals: 1, caption: 'Venio project only' })}
       ${chart('Slowest Resolved Issues', items.filter((issue) => issue.time_to_solve_hours).sort((a, b) => number(b.time_to_solve_hours) - number(a.time_to_solve_hours)).slice(0, 8).map((issue) => [issue.issue_key, number(issue.time_to_solve_hours)]), { decimals: 1 })}
       ${chart('Longest Pending Issues', items.filter((issue) => !isResolved(issue)).sort((a, b) => number(b.pending_age_hours) - number(a.pending_age_hours)).slice(0, 8).map((issue) => [issue.issue_key, number(issue.pending_age_hours)]), { decimals: 1 })}
     </section>
   `);
+}
+
+function renderExecutiveDashboard() {
+  const items = filteredIssues();
+  const profile = riskProfile(items);
+  const { m } = profile;
+  const resolutionRate = formatPercent(percent(m.resolved, m.total));
+  const openRate = formatPercent(profile.openRate);
+  const topCategoryShare = formatPercent(percent(profile.topCategory[1], profile.venioCount));
+  const latest = state.batches[0];
+  const dateRange = latest
+    ? `${displayDate(latest.min_report_date) || '-'} to ${displayDate(latest.max_report_date) || '-'}`
+    : 'No imported period';
+
+  return renderShell(`
+    ${pageHeader('Executive Issue Briefing', 'Chief-ready view of service risk, product focus, and action priorities.')}
+    ${filterPanel()}
+    <section class="executive-hero">
+      <div class="executive-readout">
+        <div class="executive-kicker">Leadership Readout</div>
+        <div class="executive-title-row">
+          <h2>${escapeHtml(profile.level)}</h2>
+          <span class="risk-badge ${slug(profile.level)}">${escapeHtml(profile.level)}</span>
+        </div>
+        <p>${escapeHtml(feedbackSummary(items))}</p>
+        <div class="executive-meta">
+          <span>Imported period: <strong>${escapeHtml(dateRange)}</strong></span>
+          <span>Filtered scope: <strong>${m.total}</strong> issues</span>
+          <span>Resolution rate: <strong>${resolutionRate}</strong></span>
+        </div>
+      </div>
+      <div class="decision-panel">
+        <div class="panel-title">
+          <h2>Decision Focus</h2>
+          <span>For weekly leadership review</span>
+        </div>
+        ${insightLine('Venio product area', profile.venioCount ? `${profile.topCategory[0]} (${topCategoryShare})` : 'No Venio issues', profile.venioCount ? `${profile.topCategory[1]} Venio issues concentrated in this area.` : 'Category analysis is scoped only to project_name Venio or VENIO-* issues.', 'brand')}
+        ${insightLine('Aging risk', `${m.pendingCritical} critical`, `${m.pendingWarning} pending issues exceed ${state.settings.pending_warning_hours}h; ${m.pendingCritical} exceed ${state.settings.pending_critical_hours}h.`, m.pendingCritical ? 'danger' : 'ok')}
+        ${insightLine('Priority queue', `${profile.highPending} high-priority pending`, 'CS and product owners should review these before broad backlog work.', profile.highPending ? 'danger' : 'ok')}
+        ${insightLine('Venio category quality', `${profile.uncategorized} uncategorized`, `${profile.venioCount} Venio issues in scope; other projects are excluded from category analysis.`, profile.uncategorized ? 'watch' : 'ok')}
+      </div>
+    </section>
+    <section class="executive-kpis">
+      ${executiveKpi('Total Issues', m.total, 'Current filtered dataset')}
+      ${executiveKpi('Open Backlog', m.open, `${openRate} of all issues`, m.open ? 'watch' : 'ok')}
+      ${executiveKpi('Critical Aging', m.pendingCritical, `Over ${state.settings.pending_critical_hours}h`, m.pendingCritical ? 'danger' : 'ok')}
+      ${executiveKpi('High Priority Pending', profile.highPending, 'High, Highest, Critical still open', profile.highPending ? 'danger' : 'ok')}
+      ${executiveKpi('Avg Pending Age', `${m.avgPending.toFixed(1)}h`, 'Open issues only', m.avgPending > settingNumber('pending_warning_hours') ? 'watch' : '')}
+      ${executiveKpi('Top Customer Impact', profile.topCustomer[0], `${profile.topCustomer[1]} issue${profile.topCustomer[1] === 1 ? '' : 's'}`)}
+    </section>
+    <section class="dashboard-grid">
+      ${chart('Backlog Flow', countBy(items, 'status_category'), { caption: 'Where work sits now' })}
+      ${chart('Venio Product Area Concentration', countByVenioCategory(items), { caption: 'Venio project only', limit: 7 })}
+      ${renderTopPending(items)}
+      ${chart('Priority Mix', countBy(items, 'priority'), { caption: `${m.high} high-priority total` })}
+      ${chart('Customer Impact', knownAccountCount(items), { caption: 'Largest affected accounts', limit: 7 })}
+      ${renderCategoryPriorities(items)}
+      ${chart('Reported Trend', countByDate(items, 'report_date'), { caption: 'Issue intake by date', limit: 10 })}
+      ${chart('Venio Resolution Drag by Category', averageBy(venioIssues(items), 'venio_category_final', 'time_to_solve_hours'), { decimals: 1, unit: 'h', caption: 'Venio project only', limit: 7 })}
+      ${renderComparison(items)}
+    </section>
+    <section class="deep-dive">
+      <div class="section-label">Analyst Appendix</div>
+      <div class="grid-3">
+        ${chart('Issues by Issue Type', countBy(items, 'issue_type'))}
+        ${chart('Issues by Project Name', countBy(items, 'project_name'))}
+        ${chart('Resolved Trend', countByDate(items, 'resolved_date'), { caption: 'Resolved by date', limit: 10 })}
+        ${chart('Venio Avg Pending Age by Category', averageBy(venioIssues(items).filter((issue) => !isResolved(issue)), 'venio_category_final', 'pending_age_hours'), { decimals: 1, unit: 'h', caption: 'Venio project only', limit: 7 })}
+        ${chart('Slowest Resolved Issues', items.filter((issue) => issue.time_to_solve_hours).sort((a, b) => number(b.time_to_solve_hours) - number(a.time_to_solve_hours)).slice(0, 8).map((issue) => [issue.issue_key, number(issue.time_to_solve_hours)]), { decimals: 1, unit: 'h' })}
+        ${chart('Longest Pending Issues', items.filter((issue) => !isResolved(issue)).sort((a, b) => number(b.pending_age_hours) - number(a.pending_age_hours)).slice(0, 8).map((issue) => [issue.issue_key, number(issue.pending_age_hours)]), { decimals: 1, unit: 'h' })}
+      </div>
+    </section>
+  `);
+}
+
+function renderTopPending(items) {
+  const rows = items
+    .filter((issue) => !isResolved(issue))
+    .sort((a, b) => number(b.pending_age_hours) - number(a.pending_age_hours))
+    .slice(0, 6);
+
+  return `
+    <div class="panel watchlist-panel">
+      <div class="panel-title">
+        <h2>Aging Watchlist</h2>
+        <span>Top open issues by age</span>
+      </div>
+      <div class="watchlist">
+        ${rows.map((issue) => `
+          <button class="watch-row" data-open-issue="${issue.id}">
+            <span class="watch-key">${escapeHtml(issue.issue_key)}</span>
+            <span class="watch-summary">${escapeHtml(issue.summary || '-')}</span>
+            <span class="watch-meta">${escapeHtml(issue.priority || '-')} / ${escapeHtml(isVenioIssue(issue) ? categoryForIssue(issue) : issue.project_name || 'Non-Venio')}</span>
+            <strong class="${pendingLevel(issue) || ''}">${number(issue.pending_age_hours).toFixed(1)}h</strong>
+          </button>
+        `).join('') || '<div class="subtle">No pending issues.</div>'}
+      </div>
+    </div>
+  `;
+}
+
+function renderCategoryPriorities(items) {
+  const scopedVenioIssues = venioIssues(items);
+  const rows = countByVenioCategory(items).slice(0, 5).map(([category, total]) => {
+    const categoryIssues = scopedVenioIssues.filter((issue) => categoryForIssue(issue) === category);
+    const open = categoryIssues.filter((issue) => !isResolved(issue)).length;
+    const critical = categoryIssues.filter((issue) => pendingLevel(issue) === 'critical').length;
+    const avgPending = avg(categoryIssues.filter((issue) => !isResolved(issue)), 'pending_age_hours');
+    return { category, total, open, critical, avgPending };
+  });
+
+  return `
+    <div class="panel priority-panel">
+      <div class="panel-title">
+        <h2>Product Improvement Priorities</h2>
+        <span>Venio project only</span>
+      </div>
+      <div class="priority-list">
+        ${rows.map((row) => `
+          <div class="priority-row">
+            <div>
+              <strong>${escapeHtml(row.category)}</strong>
+              <span>${row.total} total / ${row.open} open</span>
+            </div>
+            <div class="priority-score ${row.critical ? 'danger' : row.open ? 'watch' : 'ok'}">
+              ${row.critical ? `${row.critical} critical` : `${row.avgPending.toFixed(1)}h avg`}
+            </div>
+          </div>
+        `).join('') || '<div class="subtle">No category data.</div>'}
+      </div>
+    </div>
+  `;
 }
 
 function countByDate(items, field) {
@@ -926,7 +1271,7 @@ function renderBoard() {
     groups.get(key).push(issue);
   }
   return renderShell(`
-    ${pageHeader('Kanban Board', 'View-only operational board grouped by Status Category.')}
+    ${pageHeader('Issue Board', 'Operational board grouped by current status category.')}
     ${filterPanel()}
     <section class="board">
       ${columns.map((column) => `
@@ -943,28 +1288,25 @@ function issueCard(issue) {
   const level = pendingLevel(issue);
   const high = isHighPriority(issue) ? 'high-priority' : '';
   const pending = number(issue.pending_age_hours);
+  const categoryBadge = isVenioIssue(issue)
+    ? `<span class="mini-badge">${escapeHtml(categoryForIssue(issue))}</span>`
+    : '';
   return `
     <button class="issue-card ${level} ${high}" data-open-issue="${issue.id}">
       <span class="issue-card-labels">
         <span class="label-strip priority-${slug(issue.priority)}"></span>
-        <span class="label-strip category-label"></span>
+        ${isVenioIssue(issue) ? '<span class="label-strip category-label"></span>' : ''}
       </span>
       <strong>${escapeHtml(issue.summary)}</strong>
       <span class="issue-key">${escapeHtml(issue.issue_key)}</span>
-      <span class="subtle">${escapeHtml(issue.issue_type)} · ${escapeHtml(issue.customer_code || '-')}</span>
+      <span class="subtle">${escapeHtml(issue.issue_type)} for ${escapeHtml(issue.customer_code || '-')}</span>
       <span class="issue-card-footer">
         ${statusPill(issue.status)}
-        <span class="mini-badge">${escapeHtml(issue.venio_category_final || 'Uncategorized')}</span>
+        ${categoryBadge}
         <span class="mini-badge ${level}">${pending.toFixed(1)}h</span>
       </span>
     </button>
   `;
-}
-
-function shortText(value, limit = 900) {
-  const text = norm(value);
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}...`;
 }
 
 function middleEllipsis(value, limit = 28) {
@@ -989,19 +1331,19 @@ function issueTable(items) {
       <table>
         <thead>
           <tr>
-            <th>Issue Key</th>
-            <th>Summary</th>
-            <th>Customer</th>
-            <th>Issue Type</th>
-            <th>Priority</th>
-            <th>Status</th>
-            <th>Status Category</th>
-            <th>Venio Category</th>
-            <th>Report Date</th>
-            <th>Updated</th>
-            <th>Resolved</th>
-            <th>Time to Solve</th>
-            <th>Pending Age</th>
+            ${sortableTh('Issue Key', 'issue_key')}
+            ${sortableTh('Summary', 'summary')}
+            ${sortableTh('Customer', 'customer')}
+            ${sortableTh('Issue Type', 'type')}
+            ${sortableTh('Priority', 'priority')}
+            ${sortableTh('Status', 'status')}
+            ${sortableTh('Status Category', 'status_category')}
+            ${sortableTh('Venio Category', 'category')}
+            ${sortableTh('Report Date', 'newest')}
+            ${sortableTh('Updated', 'updated')}
+            ${sortableTh('Resolved', 'resolved')}
+            ${sortableTh('Time to Solve', 'solve')}
+            ${sortableTh('Pending Age', 'pending')}
           </tr>
         </thead>
         <tbody>
@@ -1014,7 +1356,7 @@ function issueTable(items) {
               <td>${priorityPill(issue.priority)}</td>
               <td>${statusPill(issue.status)}</td>
               <td>${escapeHtml(issue.status_category || '-')}</td>
-              <td>${escapeHtml(issue.venio_category_final || '-')}</td>
+              <td>${escapeHtml(categoryForIssue(issue))}</td>
               <td>${formatDate(issue.report_date)}</td>
               <td>${formatDate(issue.last_updated_date)}</td>
               <td>${formatDate(issue.resolved_date)}</td>
@@ -1025,6 +1367,20 @@ function issueTable(items) {
         </tbody>
       </table>
     </div>
+  `;
+}
+
+function sortableTh(label, sortKey) {
+  const active = state.filters.sort === sortKey || (sortKey === 'newest' && state.filters.sort === 'oldest');
+  const direction = state.filters.sort === 'oldest' ? 'asc' : state.filters.sort_dir;
+  const arrow = active ? (direction === 'asc' ? '&#8593;' : '&#8595;') : '&#8597;';
+  return `
+    <th>
+      <button class="table-sort ${active ? 'active' : ''}" type="button" data-table-sort="${sortKey}">
+        <span>${escapeHtml(label)}</span>
+        <span class="sort-arrow">${arrow}</span>
+      </button>
+    </th>
   `;
 }
 
@@ -1153,11 +1509,15 @@ function modal() {
     ['Last Updated', formatDate(issue.last_updated_date)],
     ['Resolved', formatDate(issue.resolved_date)],
     ['Time to Solve', issue.time_to_solve_hours ?? '-'],
-    ['Pending Age', issue.pending_age_hours ?? '-'],
-    ['Auto Category', issue.venio_category_auto],
-    ['Confidence', issue.category_confidence],
-    ['Matching Rule', issue.category_rule]
+    ['Pending Age', issue.pending_age_hours ?? '-']
   ];
+  if (isVenioIssue(issue)) {
+    fields.push(
+      ['Auto Category', issue.venio_category_auto],
+      ['Confidence', categoryConfidenceForIssue(issue)],
+      ['Matching Rule', categoryRuleForIssue(issue)]
+    );
+  }
   const description = norm(issue.description);
   return `
     <div class="modal-backdrop" data-modal-backdrop>
@@ -1166,7 +1526,7 @@ function modal() {
           <div>
             <div class="issue-card-labels">
               <span class="label-strip priority-${slug(issue.priority)}"></span>
-              <span class="label-strip category-label"></span>
+              ${isVenioIssue(issue) ? '<span class="label-strip category-label"></span>' : ''}
             </div>
             <h2>${escapeHtml(issue.summary)}</h2>
             <div class="modal-meta">
@@ -1188,20 +1548,27 @@ function modal() {
             <section class="modal-section">
               <div class="panel-title">
                 <h2>Description</h2>
-                ${description.length > 420 ? `<button class="button ghost compact" data-action="toggle-description">${state.showModalDescription ? 'Collapse' : 'Show full'}</button>` : ''}
               </div>
-              <p class="description-preview">${escapeHtml(shortText(description, 420)) || '-'}</p>
+              <p class="full-description-text">${escapeHtml(description) || '-'}</p>
             </section>
           </div>
           <aside class="modal-side">
-            <div class="modal-side-card">
-              <h2>Category</h2>
-              <div class="current-category">${escapeHtml(issue.venio_category_final || 'Uncategorized')}</div>
-              <select data-manual-category="${issue.id}">
-                ${categories.map((category) => `<option ${category === issue.venio_category_final ? 'selected' : ''}>${category}</option>`).join('')}
-              </select>
-              <button class="button primary" data-action="save-category" data-id="${issue.id}">Save Category</button>
-            </div>
+            ${isVenioIssue(issue) ? `
+              <div class="modal-side-card">
+                <h2>Venio Category</h2>
+                <div class="current-category">${escapeHtml(categoryForIssue(issue, 'Uncategorized'))}</div>
+                <select data-manual-category="${issue.id}">
+                  ${categories.map((category) => `<option ${category === categoryForIssue(issue, 'Uncategorized') ? 'selected' : ''}>${category}</option>`).join('')}
+                </select>
+                <button class="button primary" data-action="save-category" data-id="${issue.id}">Save Category</button>
+              </div>
+            ` : `
+              <div class="modal-side-card">
+                <h2>Venio Category</h2>
+                <div class="current-category muted-category">Not applicable</div>
+                <p class="subtle">Category rules apply only to project_name Venio or VENIO-* issues.</p>
+              </div>
+            `}
             <div class="modal-side-card">
               <h2>Internal Notes</h2>
               <textarea data-note="${issue.id}" placeholder="Add internal note"></textarea>
@@ -1211,15 +1578,6 @@ function modal() {
               </div>
             </div>
           </aside>
-          ${state.showModalDescription ? `
-            <section class="modal-section modal-full-description">
-              <div class="panel-title">
-                <h2>Full Description</h2>
-                <button class="button ghost compact" data-action="toggle-description">Collapse</button>
-              </div>
-              <p class="full-description-text">${escapeHtml(description) || '-'}</p>
-            </section>
-          ` : ''}
         </div>
       </article>
     </div>
@@ -1249,7 +1607,7 @@ function render() {
     'crisp-performance': () => renderPlaceholder('Crisp Chat Performance', 'Not yet available.'),
     'etaxgo-issue': () => renderPlaceholder('eTaxgo Issue', 'Not configured yet.'),
     upload: renderUpload,
-    dashboard: renderDashboard,
+    dashboard: renderExecutiveDashboard,
     board: renderBoard,
     table: renderTable,
     settings: renderSettings
@@ -1356,6 +1714,16 @@ function saveClientStore(store) {
 }
 
 function clientBootstrap(store = loadClientStore()) {
+  store.issues = (store.issues ?? []).map((issue) => isVenioIssue(issue)
+    ? issue
+    : {
+      ...issue,
+      venio_category_auto: null,
+      venio_category_manual: null,
+      venio_category_final: null,
+      category_confidence: null,
+      category_rule: null
+    });
   saveClientStore(store);
   return {
     issues: store.issues ?? [],
@@ -1366,6 +1734,9 @@ function clientBootstrap(store = loadClientStore()) {
 }
 
 function detectClientCategory(issue, rules) {
+  if (!isVenioIssue(issue)) {
+    return { category: null, confidence: null, rule: null };
+  }
   const text = `${issue.summary ?? ''} ${issue.description ?? ''}`.toLowerCase();
   const matches = new Map();
 
@@ -1455,13 +1826,13 @@ function importClientCsv(filename, content) {
   for (const incoming of validIssues) {
     const existing = existingByKey.get(incoming.issue_key);
     const detected = detectClientCategory(incoming, store.rules);
-    const manual = existing?.venio_category_manual ?? null;
+    const manual = isVenioIssue(incoming) ? existing?.venio_category_manual ?? null : null;
     const nextIssue = {
       ...(existing ?? { id: store.nextIssueId++, notes: [], created_at: now }),
       ...incoming,
       venio_category_auto: detected.category,
       venio_category_manual: manual,
-      venio_category_final: manual || detected.category,
+      venio_category_final: isVenioIssue(incoming) ? manual || detected.category : null,
       category_confidence: detected.confidence,
       category_rule: detected.rule,
       import_batch_id: batch.id,
@@ -1510,7 +1881,9 @@ async function clientApi(path, options = {}) {
   if (method === 'POST' && categoryMatch) {
     const issueId = Number(categoryMatch[1]);
     store.issues = store.issues.map((issue) => issue.id === issueId
-      ? { ...issue, venio_category_manual: body.category || null, venio_category_final: body.category || 'Uncategorized', updated_at: new Date().toISOString() }
+      ? isVenioIssue(issue)
+        ? { ...issue, venio_category_manual: body.category || null, venio_category_final: body.category || 'Uncategorized', updated_at: new Date().toISOString() }
+        : issue
       : issue);
     return clientBootstrap(store);
   }
@@ -1575,9 +1948,33 @@ function resetFilters() {
     pending_max: '',
     solve_min: '',
     solve_max: '',
-    sort: 'newest'
+    sort: 'newest',
+    sort_dir: 'desc'
   });
   state.activePreset = '';
+}
+
+function defaultSortDirection(sortKey) {
+  return ['newest', 'updated', 'resolved', 'solve', 'pending', 'priority'].includes(sortKey) ? 'desc' : 'asc';
+}
+
+function applyTableSort(sortKey) {
+  if (sortKey === 'newest' && state.filters.sort === 'newest') {
+    state.filters.sort = 'oldest';
+    state.filters.sort_dir = 'asc';
+    return;
+  }
+  if (sortKey === 'newest' && state.filters.sort === 'oldest') {
+    state.filters.sort = 'newest';
+    state.filters.sort_dir = 'desc';
+    return;
+  }
+  if (state.filters.sort === sortKey) {
+    state.filters.sort_dir = state.filters.sort_dir === 'asc' ? 'desc' : 'asc';
+    return;
+  }
+  state.filters.sort = sortKey;
+  state.filters.sort_dir = defaultSortDirection(sortKey);
 }
 
 function applyPreset(name) {
@@ -1609,7 +2006,7 @@ function exportExcel() {
     ['Pending Issues', issueRows(items.filter((issue) => !isResolved(issue)))],
     ['High Priority Pending', issueRows(items.filter((issue) => isHighPriority(issue) && !isResolved(issue)))],
     ['Over 36 Hours Pending', issueRows(items.filter((issue) => !isResolved(issue) && number(issue.pending_age_hours) > 36))],
-    ['Venio Category Breakdown', breakdownRows(countBy(items, 'venio_category_final'))],
+    ['Venio Category Breakdown', breakdownRows(countByVenioCategory(items))],
     ['Customer Breakdown', breakdownRows(countBy(items, 'customer_code'))],
     ['Issue Type Breakdown', breakdownRows(countBy(items, 'issue_type'))],
     ['Slowest Resolved Issues', issueRows(items.filter((issue) => issue.time_to_solve_hours).sort((a, b) => number(b.time_to_solve_hours) - number(a.time_to_solve_hours)).slice(0, 50))],
@@ -1661,8 +2058,8 @@ function issueRows(items) {
       issue.resolved_date,
       issue.time_to_solve_hours,
       issue.pending_age_hours,
-      issue.venio_category_final,
-      issue.category_confidence,
+      categoryForIssue(issue),
+      categoryConfidenceForIssue(issue),
       pendingLevel(issue) || 'normal'
     ])
   ];
@@ -1701,7 +2098,7 @@ function printReport() {
         <section class="panel"><h2>Executive Summary</h2><p>${escapeHtml(feedbackSummary(items))}</p></section>
         <section class="cards" style="margin-top:12px">${summaryRows(items).slice(1, 7).map(([name, value]) => card(name, value, '')).join('')}</section>
         <section class="grid-2">
-          ${chart('Key Issue Insights', countBy(items, 'venio_category_final'))}
+          ${chart('Key Issue Insights', countByVenioCategory(items), { caption: 'Venio project only' })}
           ${chart('Most Affected Customers', countBy(items, 'customer_code'))}
           ${chart('Most Common Bug/Issue Types', countBy(items, 'issue_type'))}
           ${chart('High-Priority Issues Not Handled Fast Enough', items.filter((issue) => isHighPriority(issue) && !isResolved(issue)).map((issue) => [issue.issue_key, number(issue.pending_age_hours)]), { decimals: 1 })}
@@ -1723,7 +2120,6 @@ app.addEventListener('click', async (event) => {
   if (action) {
     if (action === 'close-modal') {
       state.selectedIssueId = null;
-      state.showModalDescription = false;
       renderOverlayOnly();
       return;
     }
@@ -1760,11 +2156,6 @@ app.addEventListener('click', async (event) => {
     }
     if (action === 'add-note') {
       addNote(actionElement.dataset.id);
-      return;
-    }
-    if (action === 'toggle-description') {
-      state.showModalDescription = !state.showModalDescription;
-      renderOverlayOnly();
       return;
     }
   }
@@ -1823,9 +2214,17 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
+  const tableSort = closestFromEvent(event, '[data-table-sort]')?.dataset.tableSort;
+  if (tableSort) {
+    applyTableSort(tableSort);
+    state.openFilter = '';
+    state.openDatePicker = '';
+    render();
+    return;
+  }
+
   if (clickedElement?.matches('[data-modal-backdrop]')) {
     state.selectedIssueId = null;
-    state.showModalDescription = false;
     renderOverlayOnly();
     return;
   }
@@ -1842,7 +2241,6 @@ app.addEventListener('click', async (event) => {
   const issueId = closestFromEvent(event, '[data-open-issue]')?.dataset.openIssue;
   if (issueId) {
     state.selectedIssueId = Number(issueId);
-    state.showModalDescription = false;
     renderOverlayOnly();
     return;
   }
@@ -1886,6 +2284,9 @@ app.addEventListener('change', (event) => {
   if (target.matches('[data-filter-one]')) {
     state.openFilter = '';
     state.filters[target.dataset.filterOne] = target.value;
+    if (target.dataset.filterOne === 'sort') {
+      state.filters.sort_dir = defaultSortDirection(target.value);
+    }
     state.activePreset = '';
     render();
   }
@@ -1946,6 +2347,11 @@ async function saveRule(id = null) {
 }
 
 async function saveCategory(id) {
+  const issue = state.issues.find((item) => item.id === Number(id));
+  if (!issue || !isVenioIssue(issue)) {
+    toast('Venio category applies only to Venio issues.');
+    return;
+  }
   const category = app.querySelector(`[data-manual-category="${id}"]`)?.value;
   applyBootstrap(await api(`/api/issues/${id}/category`, { method: 'POST', body: JSON.stringify({ category }) }));
   state.selectedIssueId = Number(id);

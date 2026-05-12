@@ -12,6 +12,11 @@ function numberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function isVenioIssue(issue) {
+  return String(issue.project_name ?? '').trim().toLowerCase() === 'venio'
+    || String(issue.issue_key ?? '').trim().toUpperCase().startsWith('VENIO-');
+}
+
 function toIssue(row) {
   return {
     summary: emptyToNull(row.Summary),
@@ -92,14 +97,18 @@ export function importCsvContent(filename, content) {
         summary = ?, issue_type = ?, status = ?, status_category = ?, project_name = ?, project_type = ?,
         priority = ?, description = ?, customer_code = ?, report_date = ?, last_updated_date = ?,
         resolved_date = ?, time_to_solve_hours = ?, pending_age_hours = ?, venio_category_auto = ?,
-        venio_category_final = ?, category_confidence = ?, category_rule = ?, import_batch_id = ?, updated_at = ?
+        venio_category_manual = ?, venio_category_final = ?, category_confidence = ?, category_rule = ?,
+        import_batch_id = ?, updated_at = ?
       WHERE issue_key = ?
     `);
 
     for (const issue of validIssues) {
-      const detected = detectCategory(issue, rules);
+      const detected = isVenioIssue(issue)
+        ? detectCategory(issue, rules)
+        : { category: null, confidence: null, rule: null };
       const existing = findExisting.get(issue.issue_key);
-      const finalCategory = existing?.venio_category_manual || detected.category;
+      const manualCategory = isVenioIssue(issue) ? existing?.venio_category_manual || null : null;
+      const finalCategory = isVenioIssue(issue) ? manualCategory || detected.category : null;
 
       if (existing) {
         updateIssue.run(
@@ -118,6 +127,7 @@ export function importCsvContent(filename, content) {
           issue.time_to_solve_hours,
           issue.pending_age_hours,
           detected.category,
+          manualCategory,
           finalCategory,
           detected.confidence,
           detected.rule,
