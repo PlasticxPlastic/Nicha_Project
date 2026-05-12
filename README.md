@@ -28,6 +28,8 @@ This project can also deploy to Vercel as a static demo.
 
 In the deployed version:
 
+* Users must sign in or register before opening the hub.
+* Each signed-in user has an independent hub/workspace dataset.
 * CSV upload works in the browser.
 * Data is stored in the browser's `localStorage`.
 * Project Dashboard opens with the included static project seed from `public/demo-data.json`.

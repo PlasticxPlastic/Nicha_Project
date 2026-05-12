@@ -992,15 +992,10 @@ function renderShell(content) {
   const venioNav = ['upload', 'jira-upload', 'board', 'table', 'settings'];
   const venioWorkspaceViews = ['dashboard', ...venioNav];
   const isVenioWorkspace = venioWorkspaceViews.includes(state.view);
-  const authControls = state.auth.user ? `
+  const authControls = `
     <div class="auth-chip">
       <span>${escapeHtml(state.auth.user.username)}</span>
       <button class="button ghost" data-action="sign-out">Sign out</button>
-    </div>
-  ` : `
-    <div class="actions auth-actions">
-      <button class="button" data-action="open-auth" data-mode="signin">Sign in</button>
-      <button class="button primary" data-action="open-auth" data-mode="register">Register</button>
     </div>
   `;
   return `
@@ -1043,10 +1038,47 @@ function renderShell(content) {
       </main>
       ${modal()}
       ${projectEditModal()}
-      ${authModal()}
       ${projectImportModal()}
       ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
     </div>
+  `;
+}
+
+function renderAuthGate() {
+  const mode = state.auth.modal === 'register' ? 'register' : 'signin';
+  const isRegister = mode === 'register';
+  return `
+    <main class="auth-gate">
+      <section class="auth-gate-panel">
+        <div class="brand hub-brand">
+          ${brandLogo('venio', 'Venio', 'brand-logo-header')}
+          <span>Insight Hub</span>
+        </div>
+        <div>
+          <div class="landing-kicker">Private Workspace</div>
+          <h1>${isRegister ? 'Create your hub' : 'Sign in to your hub'}</h1>
+          <p>Each user gets an independent Customer Service hub and dashboard data.</p>
+        </div>
+        <div class="auth-body">
+          <label>
+            <span>Username</span>
+            <input data-auth-field="username" autocomplete="username" placeholder="your name">
+          </label>
+          <label>
+            <span>Password</span>
+            <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="simple password">
+          </label>
+          <button class="button primary" data-action="auth-submit" data-mode="${mode}">
+            ${isRegister ? 'Create Account' : 'Sign In'}
+          </button>
+          <button class="button ghost" data-action="open-auth" data-mode="${isRegister ? 'signin' : 'register'}">
+            ${isRegister ? 'I already have an account' : 'Create a new account'}
+          </button>
+        </div>
+        <p class="subtle">Simple login for team dashboards. Your workspace loads after sign in.</p>
+      </section>
+      ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
+    </main>
   `;
 }
 
@@ -2906,6 +2938,12 @@ function modal() {
 function render() {
   document.body.classList.toggle('dark', state.settings.dark_mode === 'true');
   document.body.classList.toggle('theme-etaxgo', state.view === 'etaxgo-issue');
+  if (!state.auth.user) {
+    document.title = 'Sign in | Customer Service Team Hub';
+    document.body.classList.remove('theme-etaxgo');
+    app.innerHTML = renderAuthGate();
+    return;
+  }
   const titles = {
     home: 'Customer Service Team Hub',
     'project-dashboard': 'Project Dashboard | Customer Service Team Hub',
@@ -2938,6 +2976,10 @@ function render() {
 }
 
 function renderOverlayOnly() {
+  if (!state.auth.user) {
+    render();
+    return;
+  }
   const modalHtml = `${modal()}${projectEditModal()}${projectImportModal()}`;
   const toastHtml = state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : '';
   const existingModal = app.querySelectorAll('.modal-backdrop');
@@ -3477,7 +3519,7 @@ async function initialBootstrap() {
       signOut(false);
     }
   }
-  return api('/api/bootstrap');
+  return clientBootstrap(createDefaultStore());
 }
 
 function applyBootstrap(payload) {
