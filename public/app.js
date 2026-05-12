@@ -1070,33 +1070,59 @@ function renderAuthGate() {
   const isRegister = mode === 'register';
   return `
     <main class="auth-gate">
-      <section class="auth-gate-panel">
-        <div class="brand hub-brand">
-          ${brandLogo('venio', 'Venio', 'brand-logo-header')}
-          <span>Insight Hub</span>
-        </div>
-        <div>
-          <div class="landing-kicker">Private Workspace</div>
-          <h1>${isRegister ? 'Create your hub' : 'Sign in to your hub'}</h1>
-          <p>Each user gets an independent Customer Service hub and dashboard data.</p>
-        </div>
-        <div class="auth-body">
-          <label>
-            <span>Username</span>
-            <input data-auth-field="username" autocomplete="username" placeholder="your name">
-          </label>
-          <label>
-            <span>Password</span>
-            <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="simple password">
-          </label>
-          <button class="button primary" data-action="auth-submit" data-mode="${mode}">
-            ${isRegister ? 'Create Account' : 'Sign In'}
-          </button>
-          <button class="button ghost" data-action="open-auth" data-mode="${isRegister ? 'signin' : 'register'}">
-            ${isRegister ? 'I already have an account' : 'Create a new account'}
-          </button>
-        </div>
-        <p class="subtle">Simple login for team dashboards. Your workspace loads after sign in.</p>
+      <section class="auth-gate-shell">
+        <aside class="auth-welcome-panel">
+          <div class="brand hub-brand">
+            ${brandLogo('venio', 'Venio', 'brand-logo-header')}
+            <span>Insight Hub</span>
+          </div>
+          <div class="auth-welcome-copy">
+            <div class="landing-kicker">Private CS Workspace</div>
+            <h1>One hub for each team member.</h1>
+            <p>Sign in first, then import and manage your own project dashboard, issue reports, notes, and settings.</p>
+          </div>
+          <div class="auth-proof-list" aria-label="Workspace benefits">
+            <div><strong>Independent data</strong><span>Imports belong to your account.</span></div>
+            <div><strong>Safe reimports</strong><span>Issues merge by key, projects merge by name.</span></div>
+            <div><strong>Any computer</strong><span>Use Vercel KV to sync your workspace online.</span></div>
+          </div>
+        </aside>
+        <section class="auth-gate-panel" aria-labelledby="auth-title">
+          <div class="auth-mode-tabs" aria-label="Choose account mode">
+            <button class="${!isRegister ? 'active' : ''}" data-action="open-auth" data-mode="signin" type="button">Sign in</button>
+            <button class="${isRegister ? 'active' : ''}" data-action="open-auth" data-mode="register" type="button">Register</button>
+          </div>
+          <div>
+            <div class="section-label">${isRegister ? 'New workspace' : 'Welcome back'}</div>
+            <h2 id="auth-title">${isRegister ? 'Create your account' : 'Sign in to continue'}</h2>
+            <p>${isRegister ? 'Start with an empty private hub and add your own data.' : 'Open your personal dashboard and saved imports.'}</p>
+          </div>
+          <div class="auth-body">
+            <label>
+              <span>Username</span>
+              <input data-auth-field="username" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="for example: nicha">
+              <small>Use the same username on another computer to open your workspace.</small>
+            </label>
+            <label>
+              <span>Password</span>
+              <div class="auth-password-wrap">
+                <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="At least 3 characters">
+                <button type="button" data-action="toggle-password">Show</button>
+              </div>
+              <small>This login is intentionally simple for internal dashboard use.</small>
+            </label>
+            <button class="button primary auth-submit-button" data-action="auth-submit" data-mode="${mode}">
+              ${isRegister ? 'Create Account' : 'Sign In'}
+            </button>
+          </div>
+          <p class="auth-switch-copy">
+            ${isRegister ? 'Already have an account?' : 'New to this hub?'}
+            <button type="button" data-action="open-auth" data-mode="${isRegister ? 'signin' : 'register'}">
+              ${isRegister ? 'Sign in instead' : 'Create an account'}
+            </button>
+          </p>
+          <p class="auth-footnote">No shared dashboard is shown before sign in.</p>
+      </section>
       </section>
       ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
     </main>
@@ -3855,6 +3881,16 @@ app.addEventListener('click', async (event) => {
     }
     if (action === 'auth-submit') {
       authSubmit(actionElement.dataset.mode || 'signin');
+      return;
+    }
+    if (action === 'toggle-password') {
+      const input = app.querySelector('[data-auth-field="password"]');
+      if (input) {
+        const isHidden = input.type === 'password';
+        input.type = isHidden ? 'text' : 'password';
+        actionElement.textContent = isHidden ? 'Hide' : 'Show';
+        input.focus();
+      }
       return;
     }
     if (action === 'sign-out') {
