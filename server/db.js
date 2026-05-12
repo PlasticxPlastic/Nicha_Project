@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -105,6 +106,20 @@ export function migrate() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (import_batch_id) REFERENCES project_tracking_batches(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_workspaces (
+      user_id INTEGER PRIMARY KEY,
+      data TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
     );
   `);
 
@@ -217,4 +232,57 @@ export function getProjectTrackingProjects() {
 
 export function getProjectTrackingBatches() {
   return db.prepare('SELECT * FROM project_tracking_batches ORDER BY imported_at DESC').all();
+}
+
+export function passwordHash(password) {
+  return createHash('sha256').update(String(password ?? '')).digest('hex');
+}
+
+export function tokenForUser(user) {
+  return Buffer.from(`${user.id}:${user.username}`).toString('base64url');
+}
+
+export function userFromToken(token) {
+  try {
+    const [id, username] = Buffer.from(String(token ?? ''), 'base64url').toString('utf8').split(':');
+    if (!id || !username) return null;
+    return db.prepare('SELECT id, username, created_at FROM users WHERE id = ? AND username = ?').get(Number(id), username) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function registerUser(username, password) {
+  const cleanUsername = String(username ?? '').trim().toLowerCase();
+  if (cleanUsername.length < 2) throw new Error('Username must be at least 2 characters.');
+  if (String(password ?? '').length < 3) throw new Error('Password must be at least 3 characters.');
+  const now = new Date().toISOString();
+  const result = db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)')
+    .run(cleanUsername, passwordHash(password), now);
+  return { id: Number(result.lastInsertRowid), username: cleanUsername, created_at: now };
+}
+
+export function loginUser(username, password) {
+  const cleanUsername = String(username ?? '').trim().toLowerCase();
+  const row = db.prepare('SELECT id, username, password_hash, created_at FROM users WHERE username = ?').get(cleanUsername);
+  if (!row || row.password_hash !== passwordHash(password)) throw new Error('Invalid username or password.');
+  return { id: row.id, username: row.username, created_at: row.created_at };
+}
+
+export function getUserWorkspace(userId) {
+  const row = db.prepare('SELECT data FROM user_workspaces WHERE user_id = ?').get(Number(userId));
+  if (!row) return null;
+  try {
+    return JSON.parse(row.data);
+  } catch {
+    return null;
+  }
+}
+
+export function saveUserWorkspace(userId, data) {
+  db.prepare(`
+    INSERT INTO user_workspaces (user_id, data, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at
+  `).run(Number(userId), JSON.stringify(data ?? {}), new Date().toISOString());
 }

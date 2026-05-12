@@ -24,7 +24,7 @@ Uploaded data is stored locally in `data/venio.sqlite`.
 
 ## Vercel No-Database Demo
 
-This project can also deploy to Vercel as a static no-database demo.
+This project can also deploy to Vercel as a static demo.
 
 In the deployed version:
 
@@ -32,9 +32,13 @@ In the deployed version:
 * Data is stored in the browser's `localStorage`.
 * Project Dashboard opens with the included static project seed from `public/demo-data.json`.
 * Add Project works in the browser and opens the project edit popup for dashboard fields.
+* Simple sign in/register is available.
+* Signed-in workspaces can sync across computers when Vercel KV/Upstash Redis env vars are configured:
+  * `KV_REST_API_URL`
+  * `KV_REST_API_TOKEN`
 * Dashboard, board, filters, notes, manual category correction, settings, PDF, and Excel exports work.
 * Data persists only in the same browser/device.
-* Data is not shared between users or devices.
+* Without KV env vars, data persists only in the same browser/device.
 * Clearing browser storage removes uploaded data.
 
 Deploy with Vercel using the included `vercel.json`.

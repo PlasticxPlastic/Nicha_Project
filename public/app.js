@@ -1,5 +1,15 @@
 const app = document.querySelector('#app');
 const STORAGE_KEY = 'customer_service_team_hub_demo_v1';
+const AUTH_TOKEN_KEY = `${STORAGE_KEY}_auth_token`;
+const AUTH_USER_KEY = `${STORAGE_KEY}_auth_user`;
+
+function storedAuthUser() {
+  try {
+    return JSON.parse(localStorage.getItem(AUTH_USER_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
 
 const state = {
   view: 'home',
@@ -11,6 +21,11 @@ const state = {
   rules: [],
   selectedIssueId: null,
   selectedProjectId: null,
+  auth: {
+    token: localStorage.getItem(AUTH_TOKEN_KEY) || '',
+    user: storedAuthUser(),
+    modal: ''
+  },
   openFilter: '',
   openDatePicker: '',
   datePickerMonth: '',
@@ -977,6 +992,17 @@ function renderShell(content) {
   const venioNav = ['upload', 'jira-upload', 'board', 'table', 'settings'];
   const venioWorkspaceViews = ['dashboard', ...venioNav];
   const isVenioWorkspace = venioWorkspaceViews.includes(state.view);
+  const authControls = state.auth.user ? `
+    <div class="auth-chip">
+      <span>${escapeHtml(state.auth.user.username)}</span>
+      <button class="button ghost" data-action="sign-out">Sign out</button>
+    </div>
+  ` : `
+    <div class="actions auth-actions">
+      <button class="button" data-action="open-auth" data-mode="signin">Sign in</button>
+      <button class="button primary" data-action="open-auth" data-mode="register">Register</button>
+    </div>
+  `;
   return `
     <div class="shell">
       <aside class="sidebar">
@@ -1009,13 +1035,15 @@ function renderShell(content) {
             <div class="actions topbar-actions">
               <button class="button primary" data-action="print-report">${icon('export')} PDF</button>
               <button class="button" data-action="export-excel">${icon('export')} Excel</button>
+              ${authControls}
             </div>
-          ` : ''}
+          ` : authControls}
         </div>
         ${content}
       </main>
       ${modal()}
       ${projectEditModal()}
+      ${authModal()}
       ${projectImportModal()}
       ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
     </div>
@@ -2747,6 +2775,45 @@ function projectEditModal() {
   `;
 }
 
+function authModal() {
+  if (!state.auth.modal) return '';
+  const isRegister = state.auth.modal === 'register';
+  return `
+    <div class="modal-backdrop auth-backdrop" data-auth-backdrop>
+      <article class="modal auth-modal">
+        <div class="modal-head">
+          <div>
+            <div class="section-label">Account</div>
+            <h2>${isRegister ? 'Register' : 'Sign in'}</h2>
+            <div class="modal-meta">
+              <span>Simple workspace login</span>
+              <span>One dataset per user</span>
+            </div>
+          </div>
+          <button class="icon-button modal-close" type="button" aria-label="Close account popup" data-action="close-auth">${icon('close')}</button>
+        </div>
+        <div class="modal-body auth-body">
+          <label>
+            <span>Username</span>
+            <input data-auth-field="username" autocomplete="username" placeholder="your name">
+          </label>
+          <label>
+            <span>Password</span>
+            <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="simple password">
+          </label>
+          <button class="button primary" data-action="auth-submit" data-mode="${state.auth.modal}">
+            ${isRegister ? 'Create Account' : 'Sign In'}
+          </button>
+          <button class="button ghost" data-action="open-auth" data-mode="${isRegister ? 'signin' : 'register'}">
+            ${isRegister ? 'I already have an account' : 'Create a new account'}
+          </button>
+          <p class="subtle">This is intentionally simple. Use a normal shared password only for low-risk dashboard data.</p>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
 function modal() {
   const issue = state.issues.find((item) => item.id === state.selectedIssueId);
   if (!issue) return '';
@@ -2942,6 +3009,28 @@ async function loadDemoSeed() {
   }
 }
 
+function currentStorageKey() {
+  return state.auth.user?.username
+    ? `${STORAGE_KEY}:user:${state.auth.user.username}`
+    : STORAGE_KEY;
+}
+
+async function saveRemoteStore(store) {
+  if (!state.auth.token) return;
+  try {
+    await fetch('/api/user-store', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${state.auth.token}`
+      },
+      body: JSON.stringify({ data: store })
+    });
+  } catch {
+    // Browser storage remains the local draft if the network is unavailable.
+  }
+}
+
 function createDefaultStore(seed = {}) {
   const issues = seed.issues ?? [];
   const batches = seed.batches ?? [];
@@ -2980,7 +3069,7 @@ function createDefaultStore(seed = {}) {
 
 function loadClientStore(seed = {}) {
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+    const stored = JSON.parse(localStorage.getItem(currentStorageKey()) || 'null');
     return stored ? { ...createDefaultStore(seed), ...stored } : createDefaultStore(seed);
   } catch {
     return createDefaultStore(seed);
@@ -2988,7 +3077,8 @@ function loadClientStore(seed = {}) {
 }
 
 function saveClientStore(store) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  localStorage.setItem(currentStorageKey(), JSON.stringify(store));
+  void saveRemoteStore(store);
 }
 
 function clientBootstrap(store = loadClientStore()) {
@@ -3325,18 +3415,69 @@ async function clientApi(path, options = {}) {
 }
 
 async function api(path, options = {}) {
-  try {
-    const response = await fetch(path, {
-      headers: { 'Content-Type': 'application/json' },
-      ...options
-    });
-    const contentType = response.headers.get('content-type') ?? '';
-    if (!response.ok || !contentType.includes('application/json')) throw new Error('API unavailable');
-    const payload = await response.json();
-    return payload;
-  } catch {
+  if (
+    state.auth.token
+    && !path.startsWith('/api/auth')
+    && path !== '/api/user-store'
+    && path !== '/api/bootstrap'
+    && path !== '/api/project-tracking/preview'
+  ) {
     return clientApi(path, options);
   }
+
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(state.auth.token ? { Authorization: `Bearer ${state.auth.token}` } : {}),
+      ...(options.headers ?? {})
+    };
+    const response = await fetch(path, {
+      ...options,
+      headers
+    });
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) throw new Error('API unavailable');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'API unavailable');
+    return payload;
+  } catch (error) {
+    if (path.startsWith('/api/auth') || path === '/api/user-store') throw error;
+    return clientApi(path, options);
+  }
+}
+
+async function loadUserWorkspace() {
+  const seed = await loadDemoSeed();
+  let store = null;
+  try {
+    const response = await fetch('/api/user-store', {
+      headers: { Authorization: `Bearer ${state.auth.token}` }
+    });
+    if (response.ok) {
+      const payload = await response.json();
+      store = payload.data;
+    }
+  } catch {
+    store = null;
+  }
+  if (!store) store = createDefaultStore(seed);
+  localStorage.setItem(currentStorageKey(), JSON.stringify(store));
+  if (state.auth.token) void saveRemoteStore(store);
+  return clientBootstrap(store);
+}
+
+async function initialBootstrap() {
+  if (state.auth.token) {
+    try {
+      const payload = await api('/api/auth/me');
+      state.auth.user = payload.user;
+      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
+      return loadUserWorkspace();
+    } catch {
+      signOut(false);
+    }
+  }
+  return api('/api/bootstrap');
 }
 
 function applyBootstrap(payload) {
@@ -3552,6 +3693,24 @@ app.addEventListener('click', async (event) => {
       renderOverlayOnly();
       return;
     }
+    if (action === 'open-auth') {
+      state.auth.modal = actionElement.dataset.mode || 'signin';
+      renderOverlayOnly();
+      return;
+    }
+    if (action === 'close-auth') {
+      state.auth.modal = '';
+      renderOverlayOnly();
+      return;
+    }
+    if (action === 'auth-submit') {
+      authSubmit(actionElement.dataset.mode || 'signin');
+      return;
+    }
+    if (action === 'sign-out') {
+      signOut();
+      return;
+    }
     if (action === 'close-project-modal') {
       state.selectedProjectId = null;
       renderOverlayOnly();
@@ -3681,6 +3840,12 @@ app.addEventListener('click', async (event) => {
 
   if (clickedElement?.matches('[data-project-modal-backdrop]')) {
     state.selectedProjectId = null;
+    renderOverlayOnly();
+    return;
+  }
+
+  if (clickedElement?.matches('[data-auth-backdrop]')) {
+    state.auth.modal = '';
     renderOverlayOnly();
     return;
   }
@@ -3991,6 +4156,43 @@ async function saveProjectField(input) {
   }
 }
 
+async function authSubmit(mode = 'signin') {
+  const username = app.querySelector('[data-auth-field="username"]')?.value;
+  const password = app.querySelector('[data-auth-field="password"]')?.value;
+  try {
+    const payload = await api(`/api/auth/${mode === 'register' ? 'register' : 'login'}`, {
+      method: 'POST',
+      body: JSON.stringify({ username, password })
+    });
+    state.auth.token = payload.token;
+    state.auth.user = payload.user;
+    state.auth.modal = '';
+    localStorage.setItem(AUTH_TOKEN_KEY, payload.token);
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
+    applyBootstrap(await loadUserWorkspace());
+    toast(`${mode === 'register' ? 'Registered' : 'Signed in'} as ${payload.user.username}.`);
+    render();
+  } catch (error) {
+    toast(error.message || 'Sign in failed.');
+    renderOverlayOnly();
+  }
+}
+
+function signOut(shouldRender = true) {
+  state.auth.token = '';
+  state.auth.user = null;
+  state.auth.modal = '';
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_USER_KEY);
+  if (shouldRender) {
+    toast('Signed out.');
+    initialBootstrap().then((payload) => {
+      applyBootstrap(payload);
+      render();
+    });
+  }
+}
+
 async function saveSettings() {
   const settings = {};
   app.querySelectorAll('[data-setting]').forEach((input) => {
@@ -4050,5 +4252,5 @@ function toast(message) {
   }, 3000);
 }
 
-applyBootstrap(await api('/api/bootstrap'));
+applyBootstrap(await initialBootstrap());
 render();
