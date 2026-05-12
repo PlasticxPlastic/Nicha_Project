@@ -3554,7 +3554,6 @@ async function api(path, options = {}) {
 }
 
 async function loadUserWorkspace() {
-  const seed = await loadDemoSeed();
   let store = null;
   try {
     const response = await fetch('/api/user-store', {
@@ -3567,7 +3566,7 @@ async function loadUserWorkspace() {
   } catch {
     store = null;
   }
-  if (!store) store = createDefaultStore(seed);
+  if (!store) store = createDefaultStore();
   localStorage.setItem(currentStorageKey(), JSON.stringify(store));
   if (state.auth.token) void saveRemoteStore(store);
   return clientBootstrap(store);

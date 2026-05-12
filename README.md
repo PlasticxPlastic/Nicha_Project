@@ -30,9 +30,10 @@ In the deployed version:
 
 * Users must sign in or register before opening the hub.
 * Each signed-in user has an independent hub/workspace dataset.
+* New accounts start with an empty workspace.
 * CSV upload works in the browser.
 * Data is stored in the browser's `localStorage`.
-* Project Dashboard opens with the included static project seed from `public/demo-data.json`.
+* The included `public/demo-data.json` seed is not applied to signed-in user workspaces.
 * Add Project works in the browser and opens the project edit popup for dashboard fields.
 * Simple sign in/register is available.
 * Signed-in workspaces can sync across computers when Vercel KV/Upstash Redis env vars are configured:
