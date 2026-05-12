@@ -34,6 +34,8 @@ In the deployed version:
 * CSV upload works in the browser.
 * Data is stored in the browser's `localStorage`.
 * The included `public/demo-data.json` seed is not applied to signed-in user workspaces.
+* Signed-in issue imports merge by `Issue key`.
+* Signed-in project imports merge by normalized `Project Name`.
 * Add Project works in the browser and opens the project edit popup for dashboard fields.
 * Simple sign in/register is available.
 * Signed-in workspaces can sync across computers when Vercel KV/Upstash Redis env vars are configured:
@@ -45,6 +47,16 @@ In the deployed version:
 * Clearing browser storage removes uploaded data.
 
 Deploy with Vercel using the included `vercel.json`.
+
+## Performance Smoke Check
+
+With the local server running:
+
+```powershell
+npm run perf
+```
+
+This checks page/API response time and frontend asset-size budgets.
 
 ## Included
 

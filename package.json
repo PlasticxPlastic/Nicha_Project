@@ -7,6 +7,7 @@
     "build": "node -e \"console.log('Static Vercel build: public directory is ready')\"",
     "dev": "node server/index.js",
     "start": "node server/index.js",
+    "perf": "node scripts/performance-smoke.mjs",
     "test": "node --test"
   },
   "engines": {

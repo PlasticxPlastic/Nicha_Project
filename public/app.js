@@ -230,6 +230,10 @@ function norm(value) {
   return String(value ?? '').trim();
 }
 
+function projectNameKey(value) {
+  return norm(value).toLowerCase().replace(/\s+/g, ' ');
+}
+
 function slug(value) {
   return norm(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
@@ -3058,7 +3062,11 @@ function maxId(items) {
   return Math.max(0, ...(items ?? []).map((item) => Number(item.id) || 0));
 }
 
+let demoSeedPromise = null;
+
 async function loadDemoSeed() {
+  if (demoSeedPromise) return demoSeedPromise;
+  demoSeedPromise = (async () => {
   try {
     const response = await fetch('/demo-data.json', { cache: 'no-store' });
     if (!response.ok) return {};
@@ -3066,6 +3074,8 @@ async function loadDemoSeed() {
   } catch {
     return {};
   }
+  })();
+  return demoSeedPromise;
 }
 
 function currentStorageKey() {
@@ -3345,7 +3355,6 @@ function importClientCsv(filename, content, format = 'normalized') {
 }
 
 async function clientApi(path, options = {}) {
-  const store = loadClientStore(await loadDemoSeed());
   const method = options.method ?? 'GET';
   const body = options.body ? JSON.parse(options.body) : {};
 
@@ -3387,6 +3396,8 @@ async function clientApi(path, options = {}) {
     return { ok: true };
   }
 
+  const store = loadClientStore(state.auth.user ? {} : await loadDemoSeed());
+
   if (method === 'GET' && path === '/api/bootstrap') return clientBootstrap(store);
   if (method === 'POST' && path === '/api/import') return importClientCsv(body.filename ?? 'upload.csv', body.content ?? '');
   if (method === 'POST' && path === '/api/import-jira') return importClientCsv(body.filename ?? 'jira-export.csv', body.content ?? '', 'jira');
@@ -3422,29 +3433,62 @@ async function clientApi(path, options = {}) {
       throw new Error('Excel import requires the local Node server. Run npm run dev and try again.');
     }
     const now = new Date().toISOString();
-    const projects = body.projects.map((project) => ({
-      ...project,
-      id: store.nextProjectId++,
-      updated_at: now,
-      created_at: now
-    }));
-    store.projectTrackingProjects = [...projects, ...(store.projectTrackingProjects ?? [])];
+    const incomingProjects = body.projects;
+    const validProjects = [];
+    let skippedRows = Number(body.skippedRows ?? 0);
+    for (const project of incomingProjects) {
+      if (!projectNameKey(project.project_name)) {
+        skippedRows += 1;
+        continue;
+      }
+      validProjects.push(project);
+    }
+
+    const seenImportKeys = new Set();
+    const duplicateCount = validProjects.filter((project) => {
+      const key = projectNameKey(project.project_name);
+      if (seenImportKeys.has(key)) return true;
+      seenImportKeys.add(key);
+      return false;
+    }).length;
+    const existingByKey = new Map((store.projectTrackingProjects ?? [])
+      .map((project) => [projectNameKey(project.project_name), project])
+      .filter(([key]) => key));
+
+    for (const incoming of validProjects) {
+      const key = projectNameKey(incoming.project_name);
+      if (!key) continue;
+      const existing = existingByKey.get(key);
+      const id = existing?.id ?? store.nextProjectId++;
+      existingByKey.set(key, {
+        ...(existing ?? {}),
+        ...incoming,
+        id,
+        source_key: existing?.source_key ?? incoming.source_key ?? `project:${key}`,
+        created_at: existing?.created_at ?? now,
+        updated_at: now
+      });
+    }
+
+    store.projectTrackingProjects = [...existingByKey.values()];
     store.projectTrackingBatches = [
       {
         id: Date.now(),
         filename: body.filename ?? 'project-tracking.xlsx',
         imported_at: now,
-        total_rows: Number(body.totalRows ?? projects.length),
-        valid_rows: projects.length,
-        skipped_rows: Number(body.skippedRows ?? 0)
+        total_rows: Number(body.totalRows ?? incomingProjects.length),
+        valid_rows: validProjects.length,
+        skipped_rows: skippedRows,
+        duplicate_count: duplicateCount
       },
       ...(store.projectTrackingBatches ?? [])
     ];
     saveClientStore(store);
     return {
       ok: true,
-      validRows: projects.length,
-      skippedRows: Number(body.skippedRows ?? 0),
+      validRows: validProjects.length,
+      skippedRows,
+      duplicateCount,
       importedAt: now,
       ...clientBootstrap(store)
     };

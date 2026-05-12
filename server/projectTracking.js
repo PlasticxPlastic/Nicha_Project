@@ -148,6 +148,10 @@ function clean(value) {
   return text && text !== '-' ? text : null;
 }
 
+function projectNameKey(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 function headerValue(row, aliases) {
   for (const alias of aliases) {
     const value = row[alias];
@@ -284,11 +288,11 @@ function rowsToRecords(rows) {
 
 function recordToProject(record) {
   if (!isVenioProject(record)) return null;
-  const sourceKey = clean(headerValue(record, ['Project ID', 'Deal ID', 'เลขที่ดีล', 'Issue key']))
-    ?? clean(headerValue(record, ['Customer Name', 'ลูกค้า', 'ดีล']))
-    ?? randomUUID();
   const customerName = clean(headerValue(record, ['Customer Name', 'ลูกค้า', 'Customer']));
   const projectName = clean(headerValue(record, ['Project Name', 'ดีล', 'Deal', 'Project']));
+  const normalizedProjectName = projectNameKey(projectName || customerName);
+  if (!normalizedProjectName) return null;
+  const sourceKey = `project:${normalizedProjectName}`;
   const rawPackageType = clean(headerValue(record, ['Package', 'Project Package', 'Project Package ', 'แพ็กเกจ']));
   const userCount = toInteger(headerValue(record, ['User Count', 'Users', 'จำนวน', 'จำนวนผู้ใช้']));
   const sourceStatus = clean(headerValue(record, ['Implementation Stage', 'Project Stage', 'ขั้นตอนการขาย', 'Status']));
@@ -326,7 +330,9 @@ function recordToProject(record) {
 }
 
 function sanitizeProjectDraft(project) {
-  const sourceKey = clean(project.source_key) ?? `import-${randomUUID()}`;
+  const normalizedProjectName = projectNameKey(project.project_name || project.customer_name);
+  if (!normalizedProjectName) return null;
+  const sourceKey = `project:${normalizedProjectName}`;
   const stage = STAGES.includes(project.stage) ? project.stage : normalizeStage(project.stage) ?? 'Kick-off';
   const fallbackYear = Number(clean(project.kickoff_date)?.slice(0, 4)) || new Date().getFullYear();
   return {
@@ -389,7 +395,7 @@ export function importProjectTrackingProjects(filename, incomingProjects, totalR
   const now = new Date().toISOString();
   const projects = incomingProjects
     .map(sanitizeProjectDraft)
-    .filter((project) => project.customer_name || project.project_name)
+    .filter(Boolean)
     .map(withReviewMetadata);
 
   let batchId;
