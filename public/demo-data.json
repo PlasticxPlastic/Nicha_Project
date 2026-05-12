@@ -1,0 +1,470 @@
+{
+  "generatedAt": "2026-05-12T17:14:43.180Z",
+  "issues": [],
+  "batches": [],
+  "projectTrackingProjects": [
+    {
+      "id": 8,
+      "source_key": "D26040066",
+      "customer_name": "บริษัท เฟมไลน์ โปรดักส์ จำกัด",
+      "project_name": "Venio Lite Package 28 User / Annual / IMP",
+      "package_type": "Lite",
+      "user_count": 28,
+      "source_status": "2. Planning",
+      "stage": "Kick-off",
+      "kickoff_date": "2026-04-22",
+      "onboarding_date": "2026-05-15",
+      "training_date": "2026-06-04",
+      "golive_date": null,
+      "notes": "On-boarding : 15/05 เวลา 14:00-17:00 น. \nOnsite Training : 04/06 เวลา 14:00-17:00 น.",
+      "timeline_info": "05/05/2026 09:35\nOn-boarding : 15/05 เวลา 14:00-17:00 น. \nOnsite Training : 04/06 เวลา 14:00-17:00 น.\nเปลี่ยนสถานะเป็น 2. Planning",
+      "edited_fields": "[]",
+      "import_batch_id": 2,
+      "created_at": "2026-05-12T16:33:09.405Z",
+      "updated_at": "2026-05-12T16:58:25.491Z"
+    },
+    {
+      "id": 7,
+      "source_key": "D26030105",
+      "customer_name": "บริษัท โมเดิร์น 15 จำกัด",
+      "project_name": "Venio Pro+ 5 User / IMP / Annual",
+      "package_type": "Pro+",
+      "user_count": 5,
+      "source_status": "3. Implementation / Green",
+      "stage": "Onboarding",
+      "kickoff_date": "2026-03-20",
+      "onboarding_date": null,
+      "training_date": null,
+      "golive_date": null,
+      "notes": "ตั้งค่าใหม่ มี Req เพิ่มเติม",
+      "timeline_info": "05/05/2026 09:40\nตั้งค่าใหม่ มี Req เพิ่มเติม\nเปลี่ยนสถานะเป็น 3. Implementation",
+      "edited_fields": "[\"user_count\"]",
+      "import_batch_id": 2,
+      "created_at": "2026-05-12T16:33:09.405Z",
+      "updated_at": "2026-05-12T16:58:25.491Z"
+    },
+    {
+      "id": 6,
+      "source_key": "D26030216",
+      "customer_name": "บริษัท โอเอไอ คอนซัลแต้นท์แอนด์แมนเนจเม้นท์ จำกัด",
+      "project_name": "Venio  Pro+ Package 12 Users / Year  บริษัท โอเอไอ คอนซัลแต้นท์แอนด์แมนเนจเม้นท์ จำกัด",
+      "package_type": "Pro+",
+      "user_count": 12,
+      "source_status": "4. Training",
+      "stage": "Training",
+      "kickoff_date": "2026-03-28",
+      "onboarding_date": "2026-05-13",
+      "training_date": "2026-05-14",
+      "golive_date": null,
+      "notes": "Onsite training : 14/05/2026 (13:00-17:00)",
+      "timeline_info": "07/05/2026 09:33\nOnsite training : 14/05/2026 (13:00-17:00)\nเปลี่ยนสถานะเป็น 4. Training",
+      "edited_fields": "[\"onboarding_date\"]",
+      "import_batch_id": 2,
+      "created_at": "2026-05-12T16:33:09.405Z",
+      "updated_at": "2026-05-12T16:58:25.491Z"
+    },
+    {
+      "id": 5,
+      "source_key": "D25090182",
+      "customer_name": "บริษัท ฟินเซนส์ กรุ๊ป จำกัด",
+      "project_name": "Venio  Pro+ Package 5 Users / Year บริษัท ฟินเซนส์ กรุ๊ป จำกัด",
+      "package_type": "Pro+",
+      "user_count": 5,
+      "source_status": "5. In Progress / Red",
+      "stage": "Training",
+      "kickoff_date": "2025-10-08",
+      "onboarding_date": null,
+      "training_date": null,
+      "golive_date": null,
+      "notes": "เทรนนิ่งแล้ว รอนัดประชุมเคลียร์สรุปก่อน Golive\n(ตั้งค่าเพิ่มเติม เริ่มใช้งานจริง)",
+      "timeline_info": "07/05/2026 09:34\nเทรนนิ่งแล้ว รอนัดประชุมเคลียร์สรุปก่อน Golive\n(ตั้งค่าเพิ่มเติม เริ่มใช้งานจริง)\nเปลี่ยนสถานะเป็น 5. In Progress",
+      "edited_fields": "[]",
+      "import_batch_id": 2,
+      "created_at": "2026-05-12T16:33:09.405Z",
+      "updated_at": "2026-05-12T16:58:25.491Z"
+    },
+    {
+      "id": 1,
+      "source_key": "D26040040",
+      "customer_name": "บริษัท ควินน์ เคม จำกัด",
+      "project_name": "Venio Pro+ 5 User",
+      "package_type": "Pro+",
+      "user_count": 6,
+      "source_status": "6. Warranty / Green",
+      "stage": "GoLive",
+      "kickoff_date": "2026-04-09",
+      "onboarding_date": null,
+      "training_date": null,
+      "golive_date": "2026-05-08",
+      "notes": "GoLive > 08/05/2026\nWarranty > 08/05/2026 - 08/06/2026",
+      "timeline_info": "11/05/2026 16:22\nGoLive > 08/05/2026\nWarranty > 08/05/2026 - 08/06/2026\nเปลี่ยนสถานะเป็น 6. Warranty",
+      "edited_fields": "[]",
+      "import_batch_id": 2,
+      "created_at": "2026-05-12T16:33:09.405Z",
+      "updated_at": "2026-05-12T16:58:25.491Z"
+    },
+    {
+      "id": 9,
+      "source_key": "D25100106",
+      "customer_name": "บริษัท เมเจอร์ โบว์ล กรุ้ป จำกัด",
+      "project_name": "Venio  Pro Package 6 Users / Year  บริษัท เมเจอร์ โบว์ล กรุ้ป จำกัด",
+      "package_type": "Pro+",
+      "user_count": 6,
+      "source_status": "5. In Progress / Red",
+      "stage": "GoLive",
+      "kickoff_date": "2025-10-29",
+      "onboarding_date": null,
+      "training_date": null,
+      "golive_date": null,
+      "notes": "รอยืนยันการล้างข้อมูล ?\nนำเข้าข้อมูลเพิ่มเติม ?\nวันGolive ?",
+      "timeline_info": "22/04/2026 14:36\nรอยืนยันการล้างข้อมูล ?\nนำเข้าข้อมูลเพิ่มเติม ?\nวันGolive ?\nเปลี่ยนสถานะเป็น 5. In Progress",
+      "edited_fields": "[]",
+      "import_batch_id": 2,
+      "created_at": "2026-05-12T16:33:09.405Z",
+      "updated_at": "2026-05-12T16:58:25.491Z"
+    },
+    {
+      "id": 10,
+      "source_key": "D26030104",
+      "customer_name": "บริษัท ครีเดน เอเชีย จำกัด",
+      "project_name": "Venio Pro+ 8 user + IMP / Annual",
+      "package_type": "Pro+",
+      "user_count": 8,
+      "source_status": "Hold Projects / Green",
+      "stage": "On Hold",
+      "kickoff_date": "2026-03-19",
+      "onboarding_date": null,
+      "training_date": null,
+      "golive_date": null,
+      "notes": "Hold ลูกค้ายังไม่อนุมัติ",
+      "timeline_info": "20/04/2026 14:07\nHold ลูกค้ายังไม่อนุมัติ\nเปลี่ยนสถานะเป็น Hold Projects",
+      "edited_fields": "[]",
+      "import_batch_id": 2,
+      "created_at": "2026-05-12T16:33:09.405Z",
+      "updated_at": "2026-05-12T16:58:25.491Z"
+    }
+  ],
+  "projectTrackingBatches": [
+    {
+      "id": 2,
+      "filename": "DealSummary_17-05-2021 to 22-04-2026.xlsx",
+      "imported_at": "2026-05-12T16:58:25.491Z",
+      "total_rows": 187,
+      "valid_rows": 47,
+      "skipped_rows": 140
+    },
+    {
+      "id": 1,
+      "filename": "DealSummary_17-05-2021 to 22-04-2026 (1).xlsx",
+      "imported_at": "2026-05-12T16:33:09.405Z",
+      "total_rows": 187,
+      "valid_rows": 47,
+      "skipped_rows": 140
+    }
+  ],
+  "settings": {
+    "dark_mode": "false",
+    "pending_critical_hours": "72",
+    "pending_warning_hours": "36",
+    "solve_critical_hours": "72",
+    "solve_warning_hours": "36"
+  },
+  "rules": [
+    {
+      "id": 32,
+      "category": "Activity Plan",
+      "keyword": "activity plan",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 33,
+      "category": "Activity Plan",
+      "keyword": "แผนกิจกรรม",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 24,
+      "category": "Campaign",
+      "keyword": "campaign",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 25,
+      "category": "Campaign",
+      "keyword": "แคมเปญ",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 28,
+      "category": "Case",
+      "keyword": "case",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 29,
+      "category": "Case",
+      "keyword": "ticket",
+      "language": "EN",
+      "weight": 8,
+      "active": true
+    },
+    {
+      "id": 37,
+      "category": "Chat",
+      "keyword": "โดโด้",
+      "language": "EN",
+      "weight": 20,
+      "active": true
+    },
+    {
+      "id": 14,
+      "category": "Chat",
+      "keyword": "chat",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 15,
+      "category": "Chat",
+      "keyword": "แชท",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 16,
+      "category": "Chat",
+      "keyword": "message",
+      "language": "EN",
+      "weight": 7,
+      "active": true
+    },
+    {
+      "id": 19,
+      "category": "Contact",
+      "keyword": "contact",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 20,
+      "category": "Contact",
+      "keyword": "ผู้ติดต่อ",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 12,
+      "category": "Contract",
+      "keyword": "contract",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 13,
+      "category": "Contract",
+      "keyword": "สัญญา",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 10,
+      "category": "Customer",
+      "keyword": "customer",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 11,
+      "category": "Customer",
+      "keyword": "ลูกค้า",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 26,
+      "category": "Deal",
+      "keyword": "deal",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 27,
+      "category": "Deal",
+      "keyword": "opportunity",
+      "language": "EN",
+      "weight": 8,
+      "active": true
+    },
+    {
+      "id": 4,
+      "category": "Expense",
+      "keyword": "expense",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 5,
+      "category": "Expense",
+      "keyword": "ค่าใช้จ่าย",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 6,
+      "category": "Expense",
+      "keyword": "เบิก",
+      "language": "TH",
+      "weight": 8,
+      "active": true
+    },
+    {
+      "id": 30,
+      "category": "Product",
+      "keyword": "product",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 31,
+      "category": "Product",
+      "keyword": "สินค้า",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 1,
+      "category": "Quotation",
+      "keyword": "quotation",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 3,
+      "category": "Quotation",
+      "keyword": "เสนอราคา",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 2,
+      "category": "Quotation",
+      "keyword": "quote",
+      "language": "EN",
+      "weight": 8,
+      "active": true
+    },
+    {
+      "id": 7,
+      "category": "Report",
+      "keyword": "report",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 8,
+      "category": "Report",
+      "keyword": "รายงาน",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 9,
+      "category": "Report",
+      "keyword": "export",
+      "language": "EN",
+      "weight": 8,
+      "active": true
+    },
+    {
+      "id": 21,
+      "category": "Sales Order",
+      "keyword": "sales order",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 23,
+      "category": "Sales Order",
+      "keyword": "ใบสั่งขาย",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 22,
+      "category": "Sales Order",
+      "keyword": "SO",
+      "language": "EN",
+      "weight": 9,
+      "active": true
+    },
+    {
+      "id": 36,
+      "category": "Sales Page",
+      "keyword": "sales page",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 17,
+      "category": "Setting",
+      "keyword": "setting",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 18,
+      "category": "Setting",
+      "keyword": "ตั้งค่า",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 34,
+      "category": "Team",
+      "keyword": "team",
+      "language": "EN",
+      "weight": 10,
+      "active": true
+    },
+    {
+      "id": 35,
+      "category": "Team",
+      "keyword": "ทีม",
+      "language": "TH",
+      "weight": 10,
+      "active": true
+    }
+  ]
+}

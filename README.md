@@ -30,6 +30,8 @@ In the deployed version:
 
 * CSV upload works in the browser.
 * Data is stored in the browser's `localStorage`.
+* Project Dashboard opens with the included static project seed from `public/demo-data.json`.
+* Add Project works in the browser and opens the project edit popup for dashboard fields.
 * Dashboard, board, filters, notes, manual category correction, settings, PDF, and Excel exports work.
 * Data persists only in the same browser/device.
 * Data is not shared between users or devices.

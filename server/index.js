@@ -2,8 +2,9 @@ import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, getBatches, getIssues, getRules, getSettings, migrate } from './db.js';
+import { db, getBatches, getIssues, getProjectTrackingBatches, getProjectTrackingProjects, getRules, getSettings, migrate } from './db.js';
 import { importCsvContent, importJiraCsvContent } from './importer.js';
+import { createProjectTrackingProject, deleteProjectTrackingProject, importProjectTrackingProjects, importProjectTrackingXlsx, previewProjectTrackingXlsx, updateProjectTrackingProject } from './projectTracking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -35,6 +36,8 @@ function bootstrapPayload() {
   return {
     issues: getIssues(),
     batches: getBatches(),
+    projectTrackingProjects: getProjectTrackingProjects(),
+    projectTrackingBatches: getProjectTrackingBatches(),
     settings: getSettings(),
     rules: getRules()
   };
@@ -74,6 +77,42 @@ async function handleApi(request, response) {
     const body = JSON.parse(await readBody(request));
     const result = importJiraCsvContent(body.filename ?? 'jira-export.csv', body.content ?? '');
     json(response, result.ok ? 200 : 400, { ...result, ...bootstrapPayload() });
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/project-tracking/import') {
+    const body = JSON.parse(await readBody(request));
+    const result = Array.isArray(body.projects)
+      ? importProjectTrackingProjects(body.filename ?? 'project-tracking.xlsx', body.projects, Number(body.totalRows ?? body.projects.length), Number(body.skippedRows ?? 0))
+      : importProjectTrackingXlsx(body.filename ?? 'project-tracking.xlsx', body.content ?? '');
+    json(response, result.ok ? 200 : 400, { ...result, ...bootstrapPayload() });
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/project-tracking/preview') {
+    const body = JSON.parse(await readBody(request));
+    const result = previewProjectTrackingXlsx(body.filename ?? 'project-tracking.xlsx', body.content ?? '');
+    json(response, result.ok ? 200 : 400, result);
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/project-tracking/projects') {
+    const createdProjectId = createProjectTrackingProject();
+    json(response, 200, { ...bootstrapPayload(), createdProjectId });
+    return;
+  }
+
+  const projectMatch = url.pathname.match(/^\/api\/project-tracking\/projects\/(\d+)$/);
+  if (request.method === 'POST' && projectMatch) {
+    const body = JSON.parse(await readBody(request));
+    updateProjectTrackingProject(Number(projectMatch[1]), body.field, body.value);
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  if (request.method === 'DELETE' && projectMatch) {
+    deleteProjectTrackingProject(Number(projectMatch[1]));
+    json(response, 200, bootstrapPayload());
     return;
   }
 

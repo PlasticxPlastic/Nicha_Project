@@ -5,9 +5,12 @@ const state = {
   view: 'home',
   issues: [],
   batches: [],
+  projectTrackingProjects: [],
+  projectTrackingBatches: [],
   settings: {},
   rules: [],
   selectedIssueId: null,
+  selectedProjectId: null,
   openFilter: '',
   openDatePicker: '',
   datePickerMonth: '',
@@ -48,6 +51,11 @@ const state = {
     distribution_grain: 'month',
     distribution_period: '',
     resolution_months: []
+  },
+  projectTracking: {
+    viewMode: 'monthly',
+    activeView: 'board',
+    importReview: null
   }
 };
 
@@ -70,6 +78,8 @@ const categories = [
   'Contact',
   'Uncategorized'
 ];
+
+const projectStages = ['Kick-off', 'Onboarding', 'Training', 'GoLive', 'Warranty', 'On Hold'];
 
 const labels = {
   home: 'Home',
@@ -593,15 +603,27 @@ function issueTypeOptions(items) {
 
 function icon(name) {
   const icons = {
+    home: '&#8962;',
+    'project-dashboard': '&#9638;',
+    'crisp-performance': '&#9729;',
+    'etaxgo-issue': 'E',
     upload: '&#8593;',
     'jira-upload': '&#8679;',
     dashboard: '&#9638;',
     board: '&#9636;',
     table: '&#9776;',
+    calendar: '&#9716;',
     settings: '&#9881;',
     search: '&#8981;',
     export: '&#8681;',
-    close: '&times;'
+    close: '&times;',
+    total: '&#9638;',
+    open: '&#9679;',
+    resolved: '&#10003;',
+    priority: '&#9888;',
+    time: '&#9716;',
+    customer: '&#9787;',
+    category: '&#9673;'
   };
   return icons[name] ?? '&bull;';
 }
@@ -636,9 +658,23 @@ function priorityPill(value) {
 }
 
 function card(label, value, hint) {
+  const labelText = norm(label).toLowerCase();
+  const iconKey = labelText.includes('open') || labelText.includes('pending')
+    ? 'open'
+    : labelText.includes('resolved')
+      ? 'resolved'
+      : labelText.includes('priority') || labelText.includes('critical')
+        ? 'priority'
+        : labelText.includes('time') || labelText.includes('age') || labelText.includes('oldest')
+          ? 'time'
+          : labelText.includes('customer')
+            ? 'customer'
+            : labelText.includes('category')
+              ? 'category'
+              : 'total';
   return `
     <div class="card">
-      <div class="card-label"><span>${label}</span><span class="card-glyph"></span></div>
+      <div class="card-label"><span>${escapeHtml(label)}</span><span class="card-icon" aria-hidden="true">${icon(iconKey)}</span></div>
       <div class="metric">${escapeHtml(value)}</div>
       <div class="subtle">${escapeHtml(hint ?? '')}</div>
     </div>
@@ -679,6 +715,32 @@ function chart(title, data, options = {}) {
     </div>
   `).join('');
   return `<div class="panel chart-panel ${options.className ?? ''}"><div class="panel-title"><h2>${title}</h2><span>${escapeHtml(options.caption ?? `${data.length} groups`)}</span></div><div class="bar-list">${rows || '<div class="subtle">No data</div>'}</div></div>`;
+}
+
+function dashboardSelect(key, label, value, options) {
+  const selected = options.find((option) => option.value === value) ?? options[0];
+  return `
+    <label class="dashboard-control custom-dashboard-control">
+      <span>${escapeHtml(label)}</span>
+      <details class="custom-select">
+        <summary>${escapeHtml(selected?.label ?? 'Select')}</summary>
+        <div class="custom-select-menu">
+          ${options.map((option) => `
+            <button
+              type="button"
+              class="custom-select-option ${option.value === value ? 'active' : ''}"
+              data-dashboard-select="${escapeHtml(key)}"
+              data-value="${escapeHtml(option.value)}"
+            >${escapeHtml(option.label)}</button>
+          `).join('')}
+        </div>
+      </details>
+    </label>
+  `;
+}
+
+function periodSelectOptions(keys) {
+  return keys.map((key) => ({ value: key, label: periodLabel(key) }));
 }
 
 function activeFilterChips() {
@@ -905,43 +967,56 @@ function numberRangeControl(label, minKey, maxKey) {
 }
 
 function renderShell(content) {
-  const latest = state.batches[0];
-  const moduleNav = ['home', 'project-dashboard', 'crisp-performance', 'etaxgo-issue'];
-  const venioNav = ['upload', 'jira-upload', 'dashboard', 'board', 'table', 'settings'];
+  const moduleNav = [
+    { key: 'home', label: labels.home },
+    { key: 'project-dashboard', label: labels['project-dashboard'] },
+    { key: 'crisp-performance', label: labels['crisp-performance'] },
+    { key: 'dashboard', label: 'Venio Issue' },
+    { key: 'etaxgo-issue', label: labels['etaxgo-issue'] }
+  ];
+  const venioNav = ['upload', 'jira-upload', 'board', 'table', 'settings'];
+  const venioWorkspaceViews = ['dashboard', ...venioNav];
+  const isVenioWorkspace = venioWorkspaceViews.includes(state.view);
   return `
     <div class="shell">
       <aside class="sidebar">
         <div class="brand sidebar-brand">${brandLogo('venio', 'Venio', 'brand-logo-sidebar')}<span>Insight</span></div>
         <nav class="nav">
-          ${moduleNav.map((key) => `
-            <button class="${state.view === key ? 'active' : ''}" data-view="${key}">
-              <span class="nav-ico">${icon(key)}</span><span>${labels[key]}</span>
+          ${moduleNav.map((item) => `
+            <button class="${state.view === item.key ? 'active' : ''}" data-view="${item.key}">
+              <span class="nav-ico">${icon(item.key)}</span><span>${item.label}</span>
             </button>
           `).join('')}
-          <div class="nav-section">Venio Issue</div>
-          ${venioNav.map((key) => `
-            <button class="${state.view === key ? 'active' : ''}" data-view="${key}">
-              <span class="nav-ico">${icon(key)}</span><span>${labels[key]}</span>
-            </button>
-          `).join('')}
+          ${isVenioWorkspace ? `
+            <div class="nav-section">Venio Issue</div>
+            ${venioNav.map((key) => `
+              <button class="${state.view === key ? 'active' : ''}" data-view="${key}">
+                <span class="nav-ico">${icon(key)}</span><span>${labels[key]}</span>
+              </button>
+            `).join('')}
+          ` : ''}
         </nav>
-        <div class="sidebar-card">
-          <div class="sidebar-kicker">Latest Dataset</div>
-          <strong title="${latest ? escapeHtml(latest.filename) : 'No CSV imported'}">${latest ? escapeHtml(middleEllipsis(latest.filename, 28)) : 'No CSV imported'}</strong>
-          <p>${latest ? `${latest.valid_rows} valid rows &middot; ${formatDate(latest.imported_at)}` : 'Waiting for CSV data'}</p>
-        </div>
       </aside>
       <main class="main">
         <div class="topbar">
           <div class="crumb">Workspace / <strong>${labels[state.view]}</strong></div>
-          <div class="actions">
-            <button class="button primary" data-action="print-report">${icon('export')} PDF Report</button>
-            <button class="button" data-action="export-excel">${icon('export')} Excel</button>
-          </div>
+          ${isVenioWorkspace ? `
+            <div class="topbar-center">
+              <input class="search topbar-search" data-filter="search" value="${escapeHtml(state.filters.search)}" placeholder="${icon('search')} Search issues...">
+            </div>
+          ` : '<div class="topbar-center"></div>'}
+          ${isVenioWorkspace ? `
+            <div class="actions topbar-actions">
+              <button class="button primary" data-action="print-report">${icon('export')} PDF</button>
+              <button class="button" data-action="export-excel">${icon('export')} Excel</button>
+            </div>
+          ` : ''}
         </div>
         ${content}
       </main>
       ${modal()}
+      ${projectEditModal()}
+      ${projectImportModal()}
       ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
     </div>
   `;
@@ -965,6 +1040,23 @@ function pageHeader(title, hint) {
   `;
 }
 
+function projectPageHeader(title, hint) {
+  const m = projectMetrics(state.projectTrackingProjects);
+  return `
+    <div class="page-title">
+      <div>
+        <h1>${title}</h1>
+        <div class="subtle">${hint}</div>
+      </div>
+      <div class="page-meta">
+        <span><strong>${m.total}</strong> projects</span>
+        <span><strong>${m.users}</strong> users</span>
+        <span><strong>${m.inProgress}</strong> in progress</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderLanding() {
   const m = metrics(state.issues);
   const issueCount = state.issues.length;
@@ -981,11 +1073,11 @@ function renderLanding() {
       key: 'project-dashboard',
       icon: 'project',
       title: 'Project Dashboard',
-      status: 'Not yet',
-      meta: 'Portfolio reporting',
-      action: 'Coming soon',
-      variant: 'coming-soon',
-      available: false
+      status: 'Live',
+      meta: `${state.projectTrackingProjects.length} implementation projects`,
+      action: 'Open workspace',
+      variant: 'live',
+      available: true
     },
     {
       key: 'crisp-performance',
@@ -1109,6 +1201,558 @@ function workspaceCard(module) {
   `;
 }
 
+function projectStageGroup(project) {
+  const stage = norm(project.stage) || 'Kick-off';
+  return stage === 'Warranty' ? 'GoLive' : stage;
+}
+
+function projectDurationDays(project) {
+  const start = dateValue(project.kickoff_date);
+  if (!start) return 0;
+  const end = dateValue(project.golive_date) ?? new Date();
+  return Math.max(0, Math.ceil((end.getTime() - start.getTime()) / 86400000));
+}
+
+function projectMetrics(projects) {
+  const grouped = projects.map(projectStageGroup);
+  const pipeline = projects.filter((project) => projectStageGroup(project) !== 'On Hold');
+  return {
+    total: projects.length,
+    users: projects.reduce((sum, project) => sum + number(project.user_count), 0),
+    inProgress: projects.filter((project) => !['GoLive', 'On Hold'].includes(projectStageGroup(project))).length,
+    pipeline: pipeline.length,
+    onHold: grouped.filter((stage) => stage === 'On Hold').length,
+    goLive: grouped.filter((stage) => stage === 'GoLive').length
+  };
+}
+
+function countProjectsByStage(projects) {
+  const counts = new Map(['Kick-off', 'Onboarding', 'Training', 'GoLive', 'On Hold'].map((stage) => [stage, 0]));
+  for (const project of projects) {
+    const stage = counts.has(projectStageGroup(project)) ? projectStageGroup(project) : 'Kick-off';
+    counts.set(stage, (counts.get(stage) ?? 0) + 1);
+  }
+  return [...counts.entries()];
+}
+
+function countProjectsByPackage(projects) {
+  const counts = new Map();
+  for (const project of projects) {
+    const key = norm(project.package_type) || 'Unknown';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function projectModeLabel() {
+  return state.projectTracking.viewMode === 'twice-weekly'
+    ? 'Twice-a-week operational review'
+    : 'Monthly management view';
+}
+
+function projectModeWindowText() {
+  const today = new Date();
+  if (state.projectTracking.viewMode === 'twice-weekly') {
+    const end = new Date(today);
+    end.setDate(end.getDate() + 3);
+    return `${displayDate(today)} to ${displayDate(end)}`;
+  }
+  return today.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+}
+
+function projectStageProgress(project) {
+  const grouped = projectStageGroup(project);
+  const activeIndex = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(grouped);
+  if (grouped === 'On Hold') return '<div class="project-progress on-hold"><span>On Hold</span></div>';
+  return `
+    <div class="project-progress" aria-label="Project implementation stage progress">
+      ${['Kick-off', 'Onboarding', 'Training', 'GoLive'].map((stage, index) => `
+        <span class="${index <= activeIndex ? 'done' : ''} ${stage === grouped ? 'current' : ''}" title="${escapeHtml(stage)}"></span>
+      `).join('')}
+    </div>
+  `;
+}
+
+function projectPieChart(projects) {
+  const data = countProjectsByStage(projects);
+  const total = Math.max(1, projects.length);
+  const colors = ['#4ea4f8', '#615cf6', '#22b873', '#14a38b', '#e64679'];
+  let cursor = 0;
+  const gradient = data.map(([, value], index) => {
+    const start = cursor;
+    cursor += (value / total) * 360;
+    return `${colors[index]} ${start}deg ${cursor}deg`;
+  }).join(', ');
+
+  return `
+    <div class="panel project-pie-panel">
+      <div class="panel-title">
+        <h2>Project Stage Distribution</h2>
+        <span>${escapeHtml(projectModeLabel())}</span>
+      </div>
+      <div class="project-pie-layout">
+        <div class="project-pie" style="background: conic-gradient(${gradient || '#e4ebf4 0deg 360deg'});">
+          <span>${projects.length}</span>
+        </div>
+        <div class="project-pie-legend">
+          ${data.map(([stage, value], index) => `
+            <div>
+              <i style="background:${colors[index]}"></i>
+              <span>${escapeHtml(stage)}</span>
+              <strong>${value}</strong>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function projectMissingFields(project) {
+  const fields = ['customer_name', 'project_name', 'package_type', 'user_count', 'stage'];
+  const missing = fields.filter((field) => {
+    const value = project[field];
+    return value === null || value === undefined || value === '';
+  });
+  const currentStageIndex = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(projectStageGroup(project));
+  if (currentStageIndex >= 0) {
+    ['kickoff_date', 'onboarding_date', 'training_date', 'golive_date'].forEach((field, index) => {
+      if (index <= currentStageIndex && !project[field]) missing.push(field);
+    });
+  }
+  return [...new Set(missing)];
+}
+
+function projectDateFields(project) {
+  return [
+    ['Kick-off', 'kickoff_date'],
+    ['Onboarding', 'onboarding_date'],
+    ['Training', 'training_date'],
+    ['GoLive', 'golive_date']
+  ].map(([stage, field]) => ({ stage, field, date: project[field] ?? '' }));
+}
+
+function projectStageBadge(project, fieldName = 'stage') {
+  const stage = norm(project[fieldName]) || 'Kick-off';
+  return `
+    <label class="stage-select-wrap stage-${slug(projectStageGroup({ stage }))}">
+      <span>${escapeHtml(stage)}</span>
+      <select data-project-id="${project.id}" data-project-field="${fieldName}" aria-label="Project stage">
+        ${projectStages.map((item) => `<option value="${escapeHtml(item)}" ${stage === item ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}
+      </select>
+    </label>
+  `;
+}
+
+function projectInlineInput(project, field, options = {}) {
+  const type = options.type ?? 'text';
+  const value = project[field] ?? '';
+  return `<input class="project-inline-input ${options.className ?? ''}" type="${type}" value="${escapeHtml(value)}" data-project-id="${project.id}" data-project-field="${field}" aria-label="${escapeHtml(options.label ?? field)}">`;
+}
+
+function projectPackagePill(project) {
+  const value = norm(project.package_type) || 'Unknown';
+  return `
+    <label class="project-package-pill package-${slug(value)}">
+      <span>${escapeHtml(value)}</span>
+      <select data-project-id="${project.id}" data-project-field="package_type" aria-label="Project package">
+        ${['Lite', 'Pro', 'Pro+'].map((pack) => `<option value="${escapeHtml(pack)}" ${project.package_type === pack ? 'selected' : ''}>${escapeHtml(pack)}</option>`).join('')}
+      </select>
+    </label>
+  `;
+}
+
+function projectDateControl(project, stage, field) {
+  const grouped = projectStageGroup(project);
+  const currentIndex = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(grouped);
+  const stageIndex = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(stage);
+  const value = project[field] ?? '';
+  const stateClass = value
+    ? stageIndex < currentIndex ? 'done' : stageIndex === currentIndex ? 'current' : 'planned'
+    : stageIndex <= currentIndex ? 'missing' : 'waiting';
+  const label = value ? displayDate(value) : stateClass === 'missing' ? 'Needs date' : 'waiting';
+  return `
+    <label class="project-date-cell ${stateClass}">
+      <span>${escapeHtml(label)}</span>
+      <input type="date" value="${escapeHtml(value)}" data-project-id="${project.id}" data-project-field="${field}" aria-label="${escapeHtml(stage)} date">
+    </label>
+  `;
+}
+
+function projectAttentionRows(projects) {
+  const missingCurrentDates = projects.filter((project) => projectMissingFields(project).some((field) => field.endsWith('_date'))).length;
+  const onHold = projects.filter((project) => projectStageGroup(project) === 'On Hold').length;
+  const longRunning = projects
+    .filter((project) => !['GoLive', 'On Hold'].includes(projectStageGroup(project)))
+    .sort((a, b) => projectDurationDays(b) - projectDurationDays(a))
+    .slice(0, 3);
+  return `
+    <div class="panel project-attention-panel">
+      <div class="panel-title">
+        <h2>Timeline Attention</h2>
+        <span>Data quality and delivery focus</span>
+      </div>
+      <div class="project-attention-grid">
+        <div class="insight-line ${missingCurrentDates ? 'watch' : 'ok'}">
+          <div><span>Missing milestone data</span><strong>${missingCurrentDates}</strong></div>
+          <p>Rows with blank dates for a stage already reached.</p>
+        </div>
+        <div class="insight-line ${onHold ? 'danger' : 'ok'}">
+          <div><span>On hold</span><strong>${onHold}</strong></div>
+          <p>Excluded from active implementation throughput.</p>
+        </div>
+        <div class="project-longrun-list">
+          ${longRunning.map((project) => `
+            <div>
+              <strong>${escapeHtml(project.customer_name || project.project_name || '-')}</strong>
+              <span>${projectDurationDays(project)} days / ${escapeHtml(projectStageGroup(project))}</span>
+            </div>
+          `).join('') || '<p class="subtle">No long-running active projects.</p>'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function projectBoardColumns(projects) {
+  const columns = ['Kick-off', 'Onboarding', 'Training', 'GoLive', 'On Hold'];
+  return columns.map((stage) => ({
+    stage,
+    projects: projects.filter((project) => projectStageGroup(project) === stage)
+  }));
+}
+
+function projectProgressValue(project) {
+  const index = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(projectStageGroup(project));
+  if (index < 0) return 0;
+  return ((index + 1) / 4) * 100;
+}
+
+function projectCardDate(project, label, field) {
+  const value = project[field] ?? '';
+  return `
+    <div class="project-card-date ${value ? 'has-date' : 'empty'}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${value ? escapeHtml(displayDate(value)) : '-'}</strong>
+    </div>
+  `;
+}
+
+function projectPackageDisplay(project) {
+  const value = norm(project.package_type) || 'Unknown';
+  return `<span class="project-package-pill package-${slug(value)}"><span>${escapeHtml(value)}</span></span>`;
+}
+
+function projectStageDisplay(project) {
+  const stage = projectStageGroup(project);
+  return `<span class="stage-select-wrap stage-${slug(stage)}"><span>${escapeHtml(stage)}</span></span>`;
+}
+
+function projectBoardCard(project) {
+  const missing = projectMissingFields(project);
+  const progress = projectProgressValue(project);
+  const totalDays = projectDurationDays(project);
+  return `
+    <article class="project-board-card stage-${slug(projectStageGroup(project))}" data-open-project="${project.id}" role="button" tabindex="0" aria-label="Edit ${escapeHtml(project.customer_name || project.project_name || 'project')}">
+      <div class="project-board-card-head">
+        ${projectPackageDisplay(project)}
+      </div>
+      <div class="project-card-name">
+        <strong class="project-card-customer">${escapeHtml(project.customer_name || '-')}</strong>
+        <span class="project-card-project">${escapeHtml(project.project_name || '-')}</span>
+      </div>
+      <div class="project-card-meta">
+        <div class="project-card-meta-item">
+          <span>Users</span>
+          <strong class="project-card-user-count">${number(project.user_count)}</strong>
+        </div>
+        ${projectStageDisplay(project)}
+      </div>
+      <div class="project-card-progress">
+        <div>
+          <span>Total Days</span>
+          <strong>${totalDays}d</strong>
+        </div>
+        <i style="width:${projectStageGroup(project) === 'On Hold' ? 100 : progress}%"></i>
+      </div>
+      <div class="project-card-dates">
+        ${projectCardDate(project, 'Kick-off', 'kickoff_date')}
+        ${projectCardDate(project, 'Onboarding', 'onboarding_date')}
+        ${projectCardDate(project, 'Training', 'training_date')}
+        ${projectCardDate(project, 'GoLive', 'golive_date')}
+      </div>
+      ${missing.length ? `<div class="project-card-alert">${missing.length} fields need review</div>` : ''}
+    </article>
+  `;
+}
+
+function projectViewTabs() {
+  const tabs = [
+    ['board', 'Board', 'board'],
+    ['timeline', 'Timeline', 'time'],
+    ['calendar', 'Calendar', 'calendar']
+  ];
+  return `
+    <div class="project-board-tabs" aria-label="Project views">
+      ${tabs.map(([key, label, iconKey]) => `
+        <button class="${state.projectTracking.activeView === key ? 'active' : ''}" type="button" data-project-view="${key}">
+          ${icon(iconKey)} ${escapeHtml(label)}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function projectKanbanBoard(projects) {
+  const columns = projectBoardColumns(projects);
+  return `
+    <section class="project-board-shell">
+      ${projectViewTabs()}
+      <div class="project-board">
+        ${columns.map(({ stage, projects: columnProjects }) => `
+          <section class="project-board-column stage-${slug(stage)}">
+            <div class="project-board-column-head">
+              <div>
+                <span></span>
+                <strong>${escapeHtml(stage)}</strong>
+                <small>${columnProjects.length}</small>
+              </div>
+              <button class="icon-button" type="button" aria-label="${escapeHtml(stage)} options">&#8942;</button>
+            </div>
+            <div class="project-board-list">
+              ${columnProjects.map(projectBoardCard).join('') || `
+                <div class="project-empty-column">
+                  <strong>No projects</strong>
+                  <span>Import or move cards into this status.</span>
+                </div>
+              `}
+            </div>
+          </section>
+        `).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function projectTimelineView(projects) {
+  const rows = [...projects].sort((a, b) => compareDates(a.kickoff_date, b.kickoff_date) || compareText(a.customer_name, b.customer_name));
+  return `
+    <section class="project-board-shell">
+      ${projectViewTabs()}
+      <div class="panel project-timeline-panel">
+        ${rows.map((project) => `
+          <article class="project-timeline-card stage-${slug(projectStageGroup(project))}">
+            <div class="project-timeline-card-head">
+              <div>
+                <strong>${escapeHtml(project.customer_name || project.project_name || '-')}</strong>
+                <span>${escapeHtml(project.project_name || '-')}</span>
+              </div>
+              ${projectStageBadge(project)}
+            </div>
+            <div class="project-timeline-line">
+              ${projectDateFields(project).map(({ stage, field }) => {
+                const filled = Boolean(project[field]);
+                return `
+                  <label class="${filled ? 'filled' : ''}">
+                    <i></i>
+                    <span>${escapeHtml(stage)}</span>
+                    <strong>${project[field] ? escapeHtml(displayDate(project[field])) : '-'}</strong>
+                    <input type="date" value="${escapeHtml(project[field] ?? '')}" data-project-id="${project.id}" data-project-field="${field}" aria-label="${escapeHtml(stage)} date">
+                  </label>
+                `;
+              }).join('')}
+            </div>
+          </article>
+        `).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function projectCalendarEvents(projects) {
+  const events = [];
+  for (const project of projects) {
+    for (const { stage, field } of projectDateFields(project)) {
+      if (!project[field]) continue;
+      events.push({ project, stage, date: project[field], month: monthKey(project[field]) });
+    }
+  }
+  return events.sort((a, b) => compareDates(a.date, b.date) || compareText(a.project.customer_name, b.project.customer_name));
+}
+
+function projectCalendarView(projects) {
+  const events = projectCalendarEvents(projects);
+  const months = [...new Set(events.map((event) => event.month))];
+  return `
+    <section class="project-board-shell">
+      ${projectViewTabs()}
+      <div class="project-calendar-grid">
+        ${months.map((month) => `
+          <section class="panel project-calendar-month">
+            <div class="panel-title">
+              <h2>${escapeHtml(periodLabel(month))}</h2>
+              <span>${events.filter((event) => event.month === month).length} milestones</span>
+            </div>
+            <div class="project-calendar-list">
+              ${events.filter((event) => event.month === month).map((event) => `
+                <article class="project-calendar-event stage-${slug(projectStageGroup(event.project))}">
+                  <time>${escapeHtml(displayDate(event.date))}</time>
+                  <div>
+                    <strong>${escapeHtml(event.stage)}</strong>
+                    <span>${escapeHtml(event.project.customer_name || event.project.project_name || '-')}</span>
+                  </div>
+                  ${projectStageBadge(event.project)}
+                </article>
+              `).join('')}
+            </div>
+          </section>
+        `).join('') || `
+          <section class="panel project-empty-board">
+            <h2>No dated milestones</h2>
+            <p class="subtle">Add milestone dates from Board or Timeline view.</p>
+          </section>
+        `}
+      </div>
+    </section>
+  `;
+}
+
+function projectActiveView(projects) {
+  const renderers = {
+    board: projectKanbanBoard,
+    timeline: projectTimelineView,
+    calendar: projectCalendarView
+  };
+  if (!renderers[state.projectTracking.activeView]) state.projectTracking.activeView = 'board';
+  return renderers[state.projectTracking.activeView](projects);
+}
+
+function projectInput(project, field, type = 'text') {
+  const value = project[field] ?? '';
+  return `<input class="project-cell-input" type="${type}" value="${escapeHtml(value)}" data-project-id="${project.id}" data-project-field="${field}">`;
+}
+
+function projectPackageSelect(project) {
+  return `
+    <select class="project-cell-input project-package-select" data-project-id="${project.id}" data-project-field="package_type">
+      ${['Lite', 'Pro', 'Pro+'].map((pack) => `<option value="${escapeHtml(pack)}" ${project.package_type === pack ? 'selected' : ''}>${escapeHtml(pack)}</option>`).join('')}
+    </select>
+  `;
+}
+
+function projectStageSelect(project) {
+  return `
+    <select class="project-cell-input" data-project-id="${project.id}" data-project-field="stage">
+      ${projectStages.map((stage) => `<option value="${escapeHtml(stage)}" ${project.stage === stage ? 'selected' : ''}>${escapeHtml(stage)}</option>`).join('')}
+    </select>
+  `;
+}
+
+function projectTextarea(project, field) {
+  return `<textarea class="project-cell-input project-note-input" rows="2" data-project-id="${project.id}" data-project-field="${field}">${escapeHtml(project[field] ?? '')}</textarea>`;
+}
+
+function projectTimeline(project) {
+  const grouped = projectStageGroup(project);
+  const activeIndex = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(grouped);
+  const milestones = [
+    ['Kick-off', 'kickoff_date'],
+    ['Onboarding', 'onboarding_date'],
+    ['Training', 'training_date'],
+    ['GoLive', 'golive_date']
+  ];
+
+  if (grouped === 'On Hold') {
+    return `
+      <div class="project-timeline-row on-hold">
+        <div class="project-hold-banner">On Hold outside active pipeline</div>
+        <div class="project-timeline">
+          ${milestones.map(([stage, field]) => projectTimelineStep(project, stage, field, false, false)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="project-timeline-row">
+      <div class="project-timeline">
+        ${milestones.map(([stage, field], index) => projectTimelineStep(project, stage, field, index <= activeIndex, index === activeIndex)).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function projectTimelineStep(project, stage, field, complete, current) {
+  const date = project[field] ?? '';
+  return `
+    <div class="timeline-step ${complete ? 'complete' : ''} ${current ? 'current' : ''}">
+      <div class="timeline-dot"></div>
+      <div class="timeline-step-body">
+        <strong>${escapeHtml(stage)}</strong>
+        <input type="date" value="${escapeHtml(date)}" data-project-id="${project.id}" data-project-field="${field}" aria-label="${escapeHtml(stage)} date">
+      </div>
+    </div>
+  `;
+}
+
+function renderProjectDashboard() {
+  const projects = state.projectTrackingProjects;
+  const m = projectMetrics(projects);
+  const latest = state.projectTrackingBatches[0];
+
+  return renderShell(`
+    ${projectPageHeader('Project Tracking Dashboard', 'Implementation pipeline, timeline health, and executive project status.')}
+    <section class="panel project-import-panel">
+      <div>
+        <div class="section-label">Excel Import</div>
+        <h2>Implementation Project Data</h2>
+        <p class="subtle">Upload the deal summary Excel file. Sales values, payment fields, and priority colors are ignored.</p>
+      </div>
+      <div class="project-import-actions">
+        <input type="file" accept=".xlsx" data-action="project-xlsx-file">
+        <button class="button primary" data-action="upload-project-xlsx">${icon('upload')} Import Excel</button>
+        <button class="button" data-action="add-project">Add Project</button>
+      </div>
+      <div class="project-import-meta">
+        ${latest ? `Latest: <strong>${escapeHtml(middleEllipsis(latest.filename, 34))}</strong> / ${latest.valid_rows} projects / ${displayDate(latest.imported_at)}` : 'No project workbook imported yet.'}
+      </div>
+    </section>
+
+    <section class="project-dashboard-toolbar">
+      <div>
+        <div class="section-label">${escapeHtml(projectModeLabel())}</div>
+        <strong>${escapeHtml(projectModeWindowText())}</strong>
+      </div>
+      <div class="segmented-control" aria-label="Project dashboard display mode">
+        <button class="${state.projectTracking.viewMode === 'monthly' ? 'active' : ''}" data-project-mode="monthly">Monthly</button>
+        <button class="${state.projectTracking.viewMode === 'twice-weekly' ? 'active' : ''}" data-project-mode="twice-weekly">Twice-weekly</button>
+      </div>
+    </section>
+
+    <section class="cards project-kpis">
+      ${card('Total Projects', m.total, 'Active implementation records')}
+      ${card('Total Users', m.users, 'Imported user count total')}
+      ${card('Pipeline Projects', m.pipeline, 'Excludes On Hold')}
+      ${card('In Progress', m.inProgress, 'Kick-off, onboarding, training')}
+      ${card('On Hold', m.onHold, 'Counted outside active pipeline')}
+      ${card('Total GoLive', m.goLive, 'GoLive and warranty grouped')}
+    </section>
+
+    <section class="dashboard-main-grid project-chart-grid">
+      ${projectPieChart(projects)}
+      ${chart('Package Distribution', countProjectsByPackage(projects), { caption: 'Projects by package', limit: 10 })}
+    </section>
+    ${projectAttentionRows(projects)}
+
+    ${projects.length ? projectActiveView(projects) : `
+      <section class="panel project-empty-board">
+        <h2>No project data yet</h2>
+        <p class="subtle">Import the Excel workbook to populate the board.</p>
+      </section>
+    `}
+  `);
+}
+
 function renderPlaceholder(title, status) {
   const isEtaxgo = title.toLowerCase().startsWith('etaxgo');
   return renderShell(`
@@ -1221,13 +1865,10 @@ function renderMonthlyVolumePanel(items) {
           <h2>Issue Volume by Month</h2>
           <span>Compare monthly intake and filter by issue type</span>
         </div>
-        <label class="dashboard-control">
-          <span>Issue Type</span>
-          <select data-dashboard="issue_type">
-            <option value="">All issue types</option>
-            ${typeOptions.map((type) => `<option value="${escapeHtml(type)}" ${selectedType === type ? 'selected' : ''}>${escapeHtml(type)}</option>`).join('')}
-          </select>
-        </label>
+        ${dashboardSelect('issue_type', 'Issue Type', selectedType, [
+          { value: '', label: 'All issue types' },
+          ...typeOptions.map((type) => ({ value: type, label: type }))
+        ])}
       </div>
       <div class="monthly-volume-layout">
         <div class="monthly-bars" aria-label="Monthly issue volume bars">
@@ -1285,19 +1926,11 @@ function renderIssueTypeDistribution(items) {
           <span>Donut view by ${grain}</span>
         </div>
         <div class="dashboard-controls">
-          <label class="dashboard-control">
-            <span>Group</span>
-            <select data-dashboard="distribution_grain">
-              <option value="month" ${grain === 'month' ? 'selected' : ''}>Month</option>
-              <option value="quarter" ${grain === 'quarter' ? 'selected' : ''}>Quarter</option>
-            </select>
-          </label>
-          <label class="dashboard-control">
-            <span>Period</span>
-            <select data-dashboard="distribution_period">
-              ${options.map((key) => `<option value="${escapeHtml(key)}" ${selected === key ? 'selected' : ''}>${escapeHtml(periodLabel(key))}</option>`).join('')}
-            </select>
-          </label>
+          ${dashboardSelect('distribution_grain', 'Group', grain, [
+            { value: 'month', label: 'Month' },
+            { value: 'quarter', label: 'Quarter' }
+          ])}
+          ${dashboardSelect('distribution_period', 'Period', selected, periodSelectOptions(options))}
         </div>
       </div>
       <div class="distribution-layout">
@@ -1363,13 +1996,16 @@ function renderResolutionRateChart(items) {
         `).join('')}
       </div>
       <div class="resolution-cards">
-        ${entries.map(([label, value]) => `
+        ${entries.map(([label, value]) => {
+          const cardLabel = label === 'Unresolved/Pending' ? 'Unresolved' : label;
+          return `
           <div class="resolution-card ${slug(label)}">
-            <span>${escapeHtml(label)}</span>
+            <span title="${escapeHtml(label)}">${escapeHtml(cardLabel)}</span>
             <strong>${value}</strong>
             <small>${formatPercent(percent(value, total))} of selected issues</small>
           </div>
-        `).join('')}
+        `;
+        }).join('')}
       </div>
     </div>
   `;
@@ -1933,6 +2569,184 @@ function settingInput(key, label) {
   return `<label><span class="subtle">${label}</span><br><input type="number" data-setting="${key}" value="${escapeHtml(state.settings[key])}"></label>`;
 }
 
+function projectFieldLabel(field) {
+  return {
+    customer_name: 'Customer',
+    project_name: 'Project',
+    package_type: 'Package',
+    user_count: 'Users',
+    stage: 'Stage',
+    kickoff_date: 'Kick-off',
+    onboarding_date: 'Onboarding',
+    training_date: 'Training',
+    golive_date: 'GoLive'
+  }[field] ?? field;
+}
+
+function projectDraftInput(project, index, field, type = 'text') {
+  return `<input class="project-review-input" type="${type}" value="${escapeHtml(project[field] ?? '')}" data-project-draft-index="${index}" data-project-draft-field="${field}" aria-label="${escapeHtml(projectFieldLabel(field))}">`;
+}
+
+function projectDraftPackage(project, index) {
+  return `
+    <select class="project-review-input" data-project-draft-index="${index}" data-project-draft-field="package_type" aria-label="Package">
+      <option value="">Select</option>
+      ${['Lite', 'Pro', 'Pro+'].map((pack) => `<option value="${escapeHtml(pack)}" ${project.package_type === pack ? 'selected' : ''}>${escapeHtml(pack)}</option>`).join('')}
+    </select>
+  `;
+}
+
+function projectDraftStage(project, index) {
+  return `
+    <select class="project-review-input" data-project-draft-index="${index}" data-project-draft-field="stage" aria-label="Stage">
+      ${projectStages.map((stage) => `<option value="${escapeHtml(stage)}" ${project.stage === stage ? 'selected' : ''}>${escapeHtml(stage)}</option>`).join('')}
+    </select>
+  `;
+}
+
+function projectImportModal() {
+  const review = state.projectTracking.importReview;
+  if (!review) return '';
+  const projects = review.projects ?? [];
+  const missingCount = projects.reduce((sum, project) => sum + (project.missing_fields?.length ?? projectMissingFields(project).length), 0);
+  return `
+    <div class="modal-backdrop project-review-backdrop" data-project-review-backdrop>
+      <article class="modal project-review-modal">
+        <div class="modal-head">
+          <div>
+            <div class="section-label">Import Review</div>
+            <h2>${escapeHtml(review.filename || 'Project workbook')}</h2>
+            <div class="modal-meta">
+              <span>${review.validRows ?? projects.length} matched projects</span>
+              <span>${review.skippedRows ?? 0} skipped rows</span>
+              <span>${missingCount} blank dashboard fields</span>
+            </div>
+          </div>
+          <button class="icon-button modal-close" type="button" aria-label="Close import review" data-action="close-project-import-review">${icon('close')}</button>
+        </div>
+        <div class="project-review-summary">
+          <div class="insight-line ${missingCount ? 'watch' : 'ok'}">
+            <div><span>Before dashboard import</span><strong>${missingCount ? 'Review blanks' : 'Ready'}</strong></div>
+            <p>Only rows matching the Venio implementation pipeline are shown. Fill the missing fields you need for presentation, then import.</p>
+          </div>
+        </div>
+        <div class="table-wrap project-review-wrap">
+          <table class="project-review-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Customer / Project</th>
+                <th>Package</th>
+                <th>Users</th>
+                <th>Stage</th>
+                <th>Kick-off</th>
+                <th>Onboarding</th>
+                <th>Training</th>
+                <th>GoLive</th>
+                <th>Review</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${projects.map((project, index) => {
+                const missing = project.missing_fields?.length ? project.missing_fields : projectMissingFields(project);
+                return `
+                  <tr>
+                    <td class="project-row-index">${index + 1}</td>
+                    <td>
+                      ${projectDraftInput(project, index, 'customer_name')}
+                      ${projectDraftInput(project, index, 'project_name')}
+                    </td>
+                    <td>${projectDraftPackage(project, index)}</td>
+                    <td>${projectDraftInput(project, index, 'user_count', 'number')}</td>
+                    <td>${projectDraftStage(project, index)}</td>
+                    <td>${projectDraftInput(project, index, 'kickoff_date', 'date')}</td>
+                    <td>${projectDraftInput(project, index, 'onboarding_date', 'date')}</td>
+                    <td>${projectDraftInput(project, index, 'training_date', 'date')}</td>
+                    <td>${projectDraftInput(project, index, 'golive_date', 'date')}</td>
+                    <td>${missing.length ? `<span class="project-review-chip">${missing.map(projectFieldLabel).join(', ')}</span>` : '<span class="project-ready-chip">Ready</span>'}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="modal-actions">
+          <button class="button" data-action="close-project-import-review">Cancel</button>
+          <button class="button primary" data-action="confirm-project-import">${icon('upload')} Import ${projects.length} Projects</button>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function projectEditModal() {
+  const project = state.projectTrackingProjects.find((item) => item.id === state.selectedProjectId);
+  if (!project) return '';
+  const missing = projectMissingFields(project);
+  const totalDays = projectDurationDays(project);
+  const readonlyFields = [
+    ['Source status', project.source_status || '-'],
+    ['Source key', project.source_key || '-'],
+    ['Updated', formatDate(project.updated_at)]
+  ];
+  return `
+    <div class="modal-backdrop project-edit-backdrop" data-project-modal-backdrop>
+      <article class="modal project-edit-modal">
+        <div class="modal-head">
+          <div>
+            <div class="section-label">Project Edit</div>
+            <h2>${escapeHtml(project.customer_name || project.project_name || 'Implementation project')}</h2>
+            <div class="modal-meta">
+              <span>${escapeHtml(projectStageGroup(project))}</span>
+              <span>${totalDays}d total</span>
+              <span>${missing.length ? `${missing.length} fields need review` : 'Ready'}</span>
+            </div>
+          </div>
+          <button class="icon-button modal-close" type="button" aria-label="Close project editor" data-action="close-project-modal">${icon('close')}</button>
+        </div>
+        <div class="modal-body project-edit-body">
+          <section class="modal-section">
+            <h2>Project Details</h2>
+            <div class="project-edit-grid">
+              <label><span>Customer</span>${projectInput(project, 'customer_name')}</label>
+              <label><span>Project</span>${projectInput(project, 'project_name')}</label>
+              <label><span>Package</span>${projectPackageSelect(project)}</label>
+              <label><span>Users</span>${projectInput(project, 'user_count', 'number')}</label>
+              <label><span>Stage</span>${projectStageSelect(project)}</label>
+            </div>
+          </section>
+          <section class="modal-section">
+            <h2>Milestones</h2>
+            <div class="project-edit-grid four">
+              <label><span>Kick-off</span>${projectInput(project, 'kickoff_date', 'date')}</label>
+              <label><span>Onboarding</span>${projectInput(project, 'onboarding_date', 'date')}</label>
+              <label><span>Training</span>${projectInput(project, 'training_date', 'date')}</label>
+              <label><span>GoLive</span>${projectInput(project, 'golive_date', 'date')}</label>
+            </div>
+          </section>
+          <section class="modal-section">
+            <h2>Notes</h2>
+            <div class="project-edit-grid two">
+              <label><span>Latest Notes</span>${projectTextarea(project, 'notes')}</label>
+              <label><span>Timeline Info</span>${projectTextarea(project, 'timeline_info')}</label>
+            </div>
+          </section>
+          <section class="modal-section">
+            <h2>Import Metadata</h2>
+            <div class="detail-list">
+              ${readonlyFields.map(([label, value]) => `<div class="detail-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('')}
+            </div>
+          </section>
+        </div>
+        <div class="modal-actions">
+          <button class="button" data-action="close-project-modal">Done</button>
+          <button class="button project-delete-modal" data-delete-project="${project.id}">${icon('close')} Delete Project</button>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
 function modal() {
   const issue = state.issues.find((item) => item.id === state.selectedIssueId);
   if (!issue) return '';
@@ -2042,7 +2856,7 @@ function render() {
   if (favicon) favicon.href = state.view === 'etaxgo-issue' ? brandAssets.etaxgo : brandAssets.venio;
   const views = {
     home: renderLanding,
-    'project-dashboard': () => renderPlaceholder('Project Dashboard', 'Not yet available.'),
+    'project-dashboard': renderProjectDashboard,
     'crisp-performance': () => renderPlaceholder('Crisp Chat Performance', 'Not yet available.'),
     'etaxgo-issue': () => renderPlaceholder('eTaxgo Issue', 'Not configured yet.'),
     upload: renderUpload,
@@ -2057,11 +2871,11 @@ function render() {
 }
 
 function renderOverlayOnly() {
-  const modalHtml = modal();
+  const modalHtml = `${modal()}${projectEditModal()}${projectImportModal()}`;
   const toastHtml = state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : '';
-  const existingModal = app.querySelector('.modal-backdrop');
+  const existingModal = app.querySelectorAll('.modal-backdrop');
   const existingToast = app.querySelector('.toast');
-  existingModal?.remove();
+  existingModal.forEach((item) => item.remove());
   existingToast?.remove();
   app.insertAdjacentHTML('beforeend', `${modalHtml}${toastHtml}`);
 }
@@ -2114,38 +2928,62 @@ function parseCsvText(text) {
   return { headers, records };
 }
 
-function createDefaultStore() {
+function maxId(items) {
+  return Math.max(0, ...(items ?? []).map((item) => Number(item.id) || 0));
+}
+
+async function loadDemoSeed() {
+  try {
+    const response = await fetch('/demo-data.json', { cache: 'no-store' });
+    if (!response.ok) return {};
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
+function createDefaultStore(seed = {}) {
+  const issues = seed.issues ?? [];
+  const batches = seed.batches ?? [];
+  const projectTrackingProjects = seed.projectTrackingProjects ?? [];
+  const projectTrackingBatches = seed.projectTrackingBatches ?? [];
+  const rules = seed.rules ?? defaultRules.map((rule, index) => ({
+    id: index + 1,
+    category: rule[0],
+    keyword: rule[1],
+    language: rule[2],
+    weight: rule[3],
+    active: true
+  }));
   return {
-    issues: [],
-    batches: [],
+    issues,
+    batches,
+    projectTrackingProjects,
+    projectTrackingBatches,
     settings: {
       pending_warning_hours: '36',
       pending_critical_hours: '72',
       solve_warning_hours: '36',
       solve_critical_hours: '72',
-      dark_mode: 'false'
+      dark_mode: 'false',
+      ...(seed.settings ?? {})
     },
-    rules: defaultRules.map((rule, index) => ({
-      id: index + 1,
-      category: rule[0],
-      keyword: rule[1],
-      language: rule[2],
-      weight: rule[3],
-      active: true
-    })),
-    nextIssueId: 1,
-    nextBatchId: 1,
+    rules,
+    nextIssueId: maxId(issues) + 1,
+    nextBatchId: maxId(batches) + 1,
     nextNoteId: 1,
-    nextRuleId: defaultRules.length + 1
+    nextRuleId: maxId(rules) + 1,
+    nextProjectId: maxId(projectTrackingProjects) + 1,
+    nextProjectBatchId: maxId(projectTrackingBatches) + 1
   };
 }
 
-function loadClientStore() {
+function loadClientStore(seed = {}) {
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-    return stored ? { ...createDefaultStore(), ...stored } : createDefaultStore();
+    return stored ? { ...createDefaultStore(seed), ...stored } : createDefaultStore(seed);
   } catch {
-    return createDefaultStore();
+    return createDefaultStore(seed);
   }
 }
 
@@ -2168,6 +3006,8 @@ function clientBootstrap(store = loadClientStore()) {
   return {
     issues: store.issues ?? [],
     batches: store.batches ?? [],
+    projectTrackingProjects: store.projectTrackingProjects ?? [],
+    projectTrackingBatches: store.projectTrackingBatches ?? [],
     settings: store.settings ?? {},
     rules: store.rules ?? []
   };
@@ -2356,7 +3196,7 @@ function importClientCsv(filename, content, format = 'normalized') {
 }
 
 async function clientApi(path, options = {}) {
-  const store = loadClientStore();
+  const store = loadClientStore(await loadDemoSeed());
   const method = options.method ?? 'GET';
   const body = options.body ? JSON.parse(options.body) : {};
 
@@ -2373,6 +3213,88 @@ async function clientApi(path, options = {}) {
     } else {
       store.rules.push({ ...body, id: store.nextRuleId++, weight: Number(body.weight), active: Boolean(body.active) });
     }
+    return clientBootstrap(store);
+  }
+
+  const projectMatch = path.match(/^\/api\/project-tracking\/projects\/(\d+)$/);
+  if (method === 'POST' && projectMatch) {
+    const projectId = Number(projectMatch[1]);
+    store.projectTrackingProjects = (store.projectTrackingProjects ?? []).map((project) => project.id === projectId
+      ? { ...project, [body.field]: body.value, updated_at: new Date().toISOString() }
+      : project);
+    saveClientStore(store);
+    return clientBootstrap(store);
+  }
+
+  if (method === 'POST' && path === '/api/project-tracking/preview') {
+    throw new Error('Excel import requires the local Node server. Run npm run dev and try again.');
+  }
+
+  if (method === 'POST' && path === '/api/project-tracking/import') {
+    if (!Array.isArray(body.projects)) {
+      throw new Error('Excel import requires the local Node server. Run npm run dev and try again.');
+    }
+    const now = new Date().toISOString();
+    const projects = body.projects.map((project) => ({
+      ...project,
+      id: store.nextProjectId++,
+      updated_at: now,
+      created_at: now
+    }));
+    store.projectTrackingProjects = [...projects, ...(store.projectTrackingProjects ?? [])];
+    store.projectTrackingBatches = [
+      {
+        id: Date.now(),
+        filename: body.filename ?? 'project-tracking.xlsx',
+        imported_at: now,
+        total_rows: Number(body.totalRows ?? projects.length),
+        valid_rows: projects.length,
+        skipped_rows: Number(body.skippedRows ?? 0)
+      },
+      ...(store.projectTrackingBatches ?? [])
+    ];
+    saveClientStore(store);
+    return {
+      ok: true,
+      validRows: projects.length,
+      skippedRows: Number(body.skippedRows ?? 0),
+      importedAt: now,
+      ...clientBootstrap(store)
+    };
+  }
+
+  if (method === 'POST' && path === '/api/project-tracking/projects') {
+    const now = new Date().toISOString();
+    const createdProjectId = store.nextProjectId++;
+    store.projectTrackingProjects = [
+      {
+        id: createdProjectId,
+        source_key: `manual-${Date.now()}`,
+        customer_name: null,
+        project_name: null,
+        package_type: 'Pro',
+        user_count: 0,
+        source_status: 'Manual',
+        stage: 'Kick-off',
+        kickoff_date: isoDate(new Date()),
+        onboarding_date: null,
+        training_date: null,
+        golive_date: null,
+        notes: null,
+        timeline_info: null,
+        created_at: now,
+        updated_at: now
+      },
+      ...(store.projectTrackingProjects ?? [])
+    ];
+    saveClientStore(store);
+    return { ...clientBootstrap(store), createdProjectId };
+  }
+
+  if (method === 'DELETE' && projectMatch) {
+    const projectId = Number(projectMatch[1]);
+    store.projectTrackingProjects = (store.projectTrackingProjects ?? []).filter((project) => project.id !== projectId);
+    saveClientStore(store);
     return clientBootstrap(store);
   }
 
@@ -2420,6 +3342,8 @@ async function api(path, options = {}) {
 function applyBootstrap(payload) {
   state.issues = payload.issues ?? [];
   state.batches = payload.batches ?? [];
+  state.projectTrackingProjects = payload.projectTrackingProjects ?? [];
+  state.projectTrackingBatches = payload.projectTrackingBatches ?? [];
   state.settings = payload.settings ?? {};
   state.rules = payload.rules ?? [];
 }
@@ -2623,6 +3547,20 @@ app.addEventListener('click', async (event) => {
       renderOverlayOnly();
       return;
     }
+    if (action === 'close-project-import-review') {
+      state.projectTracking.importReview = null;
+      renderOverlayOnly();
+      return;
+    }
+    if (action === 'close-project-modal') {
+      state.selectedProjectId = null;
+      renderOverlayOnly();
+      return;
+    }
+    if (action === 'confirm-project-import') {
+      confirmProjectImport();
+      return;
+    }
     if (action === 'reset-filters') {
       resetFilters();
       state.openFilter = '';
@@ -2644,6 +3582,14 @@ app.addEventListener('click', async (event) => {
     }
     if (action === 'upload-jira-csv') {
       uploadCsv('jira');
+      return;
+    }
+    if (action === 'upload-project-xlsx') {
+      uploadProjectWorkbook();
+      return;
+    }
+    if (action === 'add-project') {
+      addProject();
       return;
     }
     if (action === 'save-settings') {
@@ -2727,6 +3673,18 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
+  if (clickedElement?.matches('[data-project-review-backdrop]')) {
+    state.projectTracking.importReview = null;
+    renderOverlayOnly();
+    return;
+  }
+
+  if (clickedElement?.matches('[data-project-modal-backdrop]')) {
+    state.selectedProjectId = null;
+    renderOverlayOnly();
+    return;
+  }
+
   if (clickedElement?.matches('[data-modal-backdrop]')) {
     state.selectedIssueId = null;
     renderOverlayOnly();
@@ -2736,6 +3694,7 @@ app.addEventListener('click', async (event) => {
   const view = closestFromEvent(event, '[data-view]')?.dataset.view;
   if (view) {
     state.view = view;
+    state.selectedProjectId = null;
     state.openFilter = '';
     state.openDatePicker = '';
     render();
@@ -2757,12 +3716,61 @@ app.addEventListener('click', async (event) => {
     render();
   }
 
+  const dashboardSelectOption = closestFromEvent(event, '[data-dashboard-select]');
+  if (dashboardSelectOption) {
+    const key = dashboardSelectOption.dataset.dashboardSelect;
+    state.dashboard[key] = dashboardSelectOption.dataset.value ?? '';
+    if (key === 'distribution_grain') state.dashboard.distribution_period = '';
+    render();
+    return;
+  }
+
+  const projectMode = closestFromEvent(event, '[data-project-mode]')?.dataset.projectMode;
+  if (projectMode) {
+    state.projectTracking.viewMode = projectMode;
+    render();
+    return;
+  }
+
+  const projectView = closestFromEvent(event, '[data-project-view]')?.dataset.projectView;
+  if (projectView) {
+    state.projectTracking.activeView = projectView;
+    render();
+    return;
+  }
+
+  const deleteProjectId = closestFromEvent(event, '[data-delete-project]')?.dataset.deleteProject;
+  if (deleteProjectId) {
+    deleteProject(Number(deleteProjectId));
+    return;
+  }
+
+  const projectId = closestFromEvent(event, '[data-open-project]')?.dataset.openProject;
+  if (projectId) {
+    state.selectedProjectId = Number(projectId);
+    renderOverlayOnly();
+    return;
+  }
+
   const ruleId = closestFromEvent(event, '[data-save-rule]')?.dataset.saveRule;
   if (ruleId) saveRule(Number(ruleId));
 });
 
+app.addEventListener('keydown', (event) => {
+  if (!['Enter', ' '].includes(event.key)) return;
+  const projectId = closestFromEvent(event, '[data-open-project]')?.dataset.openProject;
+  if (!projectId) return;
+  event.preventDefault();
+  state.selectedProjectId = Number(projectId);
+  renderOverlayOnly();
+});
+
 app.addEventListener('input', (event) => {
   const target = event.target;
+  if (target.matches('[data-project-draft-field]')) {
+    updateProjectImportDraft(target);
+    return;
+  }
   if (target.matches('[data-filter]')) {
     const key = target.dataset.filter;
     state.openFilter = key;
@@ -2778,6 +3786,11 @@ app.addEventListener('input', (event) => {
 
 app.addEventListener('change', (event) => {
   const target = event.target;
+  if (target.matches('[data-project-draft-field]')) {
+    updateProjectImportDraft(target);
+    renderOverlayOnly();
+    return;
+  }
   if (target.matches('[data-filter-check]')) {
     const field = target.dataset.filterCheck;
     state.openFilter = field;
@@ -2811,6 +3824,9 @@ app.addEventListener('change', (event) => {
       .map((input) => input.value);
     render();
   }
+  if (target.matches('[data-project-field]')) {
+    saveProjectField(target);
+  }
 });
 
 async function uploadCsv(format = 'normalized') {
@@ -2838,6 +3854,139 @@ async function uploadCsv(format = 'normalized') {
     render();
   } catch (error) {
     toast(`Import failed after ${results.length} file${results.length === 1 ? '' : 's'}: ${error.message}`);
+    render();
+  }
+}
+
+async function fileToBase64(file) {
+  const buffer = await file.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function uploadProjectWorkbook() {
+  const input = app.querySelector('[data-action="project-xlsx-file"]');
+  const file = input?.files?.[0];
+  if (!file) return toast('Select an Excel workbook first.');
+  try {
+    const content = await fileToBase64(file);
+    const payload = await api('/api/project-tracking/preview', {
+      method: 'POST',
+      body: JSON.stringify({ filename: file.name, content })
+    });
+    if (!(payload.projects ?? []).length) {
+      toast(`No matching Venio implementation projects found. Skipped ${payload.skippedRows ?? 0} rows.`);
+      render();
+      return;
+    }
+    state.projectTracking.importReview = payload;
+    toast(`${payload.validRows ?? 0} matching projects found. Review missing fields before import.`);
+    render();
+  } catch (error) {
+    toast(`Project import failed: ${error.message}`);
+    render();
+  }
+}
+
+function refreshProjectDraftReview(project) {
+  project.missing_fields = projectMissingFields(project);
+  project.needs_review = project.missing_fields.length > 0;
+}
+
+function updateProjectImportDraft(target) {
+  const review = state.projectTracking.importReview;
+  if (!review) return;
+  const index = Number(target.dataset.projectDraftIndex);
+  const field = target.dataset.projectDraftField;
+  const project = review.projects?.[index];
+  if (!project || !field) return;
+  project[field] = target.value;
+  refreshProjectDraftReview(project);
+}
+
+async function confirmProjectImport() {
+  const review = state.projectTracking.importReview;
+  if (!review) return;
+  app.querySelectorAll('[data-project-draft-field]').forEach(updateProjectImportDraft);
+  try {
+    const payload = await api('/api/project-tracking/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        filename: review.filename,
+        totalRows: review.totalRows,
+        skippedRows: review.skippedRows,
+        projects: review.projects
+      })
+    });
+    state.projectTracking.importReview = null;
+    applyBootstrap(payload);
+    state.view = 'project-dashboard';
+    toast(`Imported ${payload.validRows ?? 0} project rows. Skipped ${payload.skippedRows ?? 0}.`);
+    render();
+  } catch (error) {
+    toast(`Project import failed: ${error.message}`);
+    renderOverlayOnly();
+  }
+}
+
+async function addProject() {
+  try {
+    const payload = await api('/api/project-tracking/projects', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    applyBootstrap(payload);
+    state.view = 'project-dashboard';
+    state.projectTracking.activeView = 'board';
+    state.selectedProjectId = Number(payload.createdProjectId ?? state.projectTrackingProjects[0]?.id ?? 0) || null;
+    toast('Project added. Fill in the dashboard fields.');
+    render();
+  } catch (error) {
+    toast(`Add project failed: ${error.message}`);
+    render();
+  }
+}
+
+async function deleteProject(id) {
+  const project = state.projectTrackingProjects.find((item) => item.id === id);
+  if (!project) return;
+  if (!window.confirm(`Delete ${project.customer_name || project.project_name || 'this project'}?`)) return;
+  try {
+    if (state.selectedProjectId === id) state.selectedProjectId = null;
+    applyBootstrap(await api(`/api/project-tracking/projects/${id}`, {
+      method: 'DELETE'
+    }));
+    toast('Project deleted.');
+    render();
+  } catch (error) {
+    toast(`Delete project failed: ${error.message}`);
+    render();
+  }
+}
+
+async function saveProjectField(input) {
+  const id = Number(input.dataset.projectId);
+  const field = input.dataset.projectField;
+  const value = input.value;
+  const project = state.projectTrackingProjects.find((item) => item.id === id);
+  if (!project || project[field] === value) return;
+
+  project[field] = value;
+  project.updated_at = new Date().toISOString();
+  render();
+  try {
+    applyBootstrap(await api(`/api/project-tracking/projects/${id}`, {
+      method: 'POST',
+      body: JSON.stringify({ field, value })
+    }));
+    toast('Project updated.');
+    render();
+  } catch (error) {
+    toast(`Project update failed: ${error.message}`);
     render();
   }
 }

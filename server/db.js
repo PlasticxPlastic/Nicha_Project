@@ -75,6 +75,37 @@ export function migrate() {
       weight INTEGER NOT NULL DEFAULT 1,
       active INTEGER NOT NULL DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS project_tracking_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename TEXT NOT NULL,
+      imported_at TEXT NOT NULL,
+      total_rows INTEGER NOT NULL,
+      valid_rows INTEGER NOT NULL,
+      skipped_rows INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_tracking_projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_key TEXT NOT NULL UNIQUE,
+      customer_name TEXT,
+      project_name TEXT,
+      package_type TEXT,
+      user_count INTEGER,
+      source_status TEXT,
+      stage TEXT,
+      kickoff_date TEXT,
+      onboarding_date TEXT,
+      training_date TEXT,
+      golive_date TEXT,
+      notes TEXT,
+      timeline_info TEXT,
+      edited_fields TEXT NOT NULL DEFAULT '[]',
+      import_batch_id INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (import_batch_id) REFERENCES project_tracking_batches(id)
+    );
   `);
 
   const issueColumns = db.prepare('PRAGMA table_info(issues)').all().map((column) => column.name);
@@ -151,4 +182,39 @@ export function getIssues() {
 
 export function getBatches() {
   return db.prepare('SELECT * FROM import_batches ORDER BY imported_at DESC').all();
+}
+
+export function getProjectTrackingProjects() {
+  return db.prepare(`
+    SELECT *
+    FROM project_tracking_projects
+    WHERE source_status IS NULL
+      OR source_status = 'Manual'
+      OR LOWER(source_status) LIKE '%planning%'
+      OR LOWER(source_status) LIKE '%implement%'
+      OR LOWER(source_status) LIKE '%onboarding%'
+      OR LOWER(source_status) LIKE '%on-boarding%'
+      OR LOWER(source_status) LIKE '%training%'
+      OR LOWER(source_status) LIKE '%in progress%'
+      OR LOWER(source_status) LIKE '%golive%'
+      OR LOWER(source_status) LIKE '%go live%'
+      OR LOWER(source_status) LIKE '%warranty%'
+      OR LOWER(source_status) LIKE '%hold%'
+    ORDER BY
+      CASE stage
+        WHEN 'Kick-off' THEN 1
+        WHEN 'Onboarding' THEN 2
+        WHEN 'Training' THEN 3
+        WHEN 'GoLive' THEN 4
+        WHEN 'Warranty' THEN 5
+        WHEN 'On Hold' THEN 6
+        ELSE 7
+      END,
+      COALESCE(kickoff_date, created_at) DESC,
+      customer_name
+  `).all();
+}
+
+export function getProjectTrackingBatches() {
+  return db.prepare('SELECT * FROM project_tracking_batches ORDER BY imported_at DESC').all();
 }
