@@ -2,6 +2,7 @@ const app = document.querySelector('#app');
 const STORAGE_KEY = 'customer_service_team_hub_demo_v1';
 const AUTH_TOKEN_KEY = `${STORAGE_KEY}_auth_token`;
 const AUTH_USER_KEY = `${STORAGE_KEY}_auth_user`;
+const AUTH_USERS_KEY = `${STORAGE_KEY}_auth_users`;
 
 function storedAuthUser() {
   try {
@@ -9,6 +10,22 @@ function storedAuthUser() {
   } catch {
     return null;
   }
+}
+
+function loadClientUsers() {
+  try {
+    return JSON.parse(localStorage.getItem(AUTH_USERS_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function saveClientUsers(users) {
+  localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(users));
+}
+
+function clientTokenForUser(user) {
+  return btoa(`${user.id}:${user.username}`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
 const state = {
@@ -3332,6 +3349,44 @@ async function clientApi(path, options = {}) {
   const method = options.method ?? 'GET';
   const body = options.body ? JSON.parse(options.body) : {};
 
+  if (method === 'GET' && path === '/api/auth/me') {
+    if (!state.auth.user || !state.auth.token) throw new Error('Not signed in.');
+    return { user: state.auth.user, token: state.auth.token };
+  }
+
+  if (method === 'POST' && path === '/api/auth/register') {
+    const users = loadClientUsers();
+    const username = norm(body.username).toLowerCase();
+    const password = String(body.password ?? '');
+    if (username.length < 2) throw new Error('Username must be at least 2 characters.');
+    if (password.length < 3) throw new Error('Password must be at least 3 characters.');
+    if (users[username]) throw new Error('Username already exists.');
+    const user = { id: `local-${Date.now()}`, username };
+    users[username] = { ...user, password };
+    saveClientUsers(users);
+    return { user, token: clientTokenForUser(user) };
+  }
+
+  if (method === 'POST' && path === '/api/auth/login') {
+    const users = loadClientUsers();
+    const username = norm(body.username).toLowerCase();
+    const found = users[username];
+    if (!found || found.password !== String(body.password ?? '')) throw new Error('Invalid username or password.');
+    const user = { id: found.id, username: found.username };
+    return { user, token: clientTokenForUser(user) };
+  }
+
+  if (method === 'GET' && path === '/api/user-store') {
+    if (!state.auth.user) throw new Error('Sign in required.');
+    return { data: loadClientStore(await loadDemoSeed()) };
+  }
+
+  if (method === 'PUT' && path === '/api/user-store') {
+    if (!state.auth.user) throw new Error('Sign in required.');
+    localStorage.setItem(currentStorageKey(), JSON.stringify(body.data ?? {}));
+    return { ok: true };
+  }
+
   if (method === 'GET' && path === '/api/bootstrap') return clientBootstrap(store);
   if (method === 'POST' && path === '/api/import') return importClientCsv(body.filename ?? 'upload.csv', body.content ?? '');
   if (method === 'POST' && path === '/api/import-jira') return importClientCsv(body.filename ?? 'jira-export.csv', body.content ?? '', 'jira');
@@ -3483,7 +3538,17 @@ async function api(path, options = {}) {
     if (!response.ok) throw new Error(payload.error || 'API unavailable');
     return payload;
   } catch (error) {
-    if (path.startsWith('/api/auth') || path === '/api/user-store') throw error;
+    if (path.startsWith('/api/auth') || path === '/api/user-store') {
+      const message = String(error.message || '');
+      if (
+        message.includes('Not found')
+        || message.includes('API unavailable')
+        || message.includes('Vercel KV is not configured')
+      ) {
+        return clientApi(path, options);
+      }
+      throw error;
+    }
     return clientApi(path, options);
   }
 }
