@@ -846,13 +846,17 @@ function chart(title, data, options = {}) {
   const max = Math.max(1, ...data.map(([, value]) => value));
   const decimals = options.decimals ?? 0;
   const unit = options.unit ?? '';
-  const rows = data.slice(0, options.limit ?? 8).map(([label, value]) => `
-    <div class="bar-row">
+  const rows = data.slice(0, options.limit ?? 8).map(([label, value]) => {
+    const displayValue = `${Number(value).toFixed(decimals)}${unit}`;
+    const tooltip = `${label}: ${displayValue}`;
+    return `
+    <div class="bar-row chart-hoverable" tabindex="0" aria-label="${escapeHtml(tooltip)}" data-chart-tooltip="${escapeHtml(tooltip)}">
       <div class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
       <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, (value / max) * 100)}%"></div></div>
-      <strong>${Number(value).toFixed(decimals)}${unit}</strong>
+      <strong>${escapeHtml(displayValue)}</strong>
     </div>
-  `).join('');
+  `;
+  }).join('');
   return `<div class="panel chart-panel ${options.className ?? ''}"><div class="panel-title"><h2>${title}</h2><span>${escapeHtml(options.caption ?? `${data.length} groups`)}</span></div><div class="bar-list">${rows || '<div class="subtle">No data</div>'}</div></div>`;
 }
 
@@ -1470,12 +1474,12 @@ function projectPieChart(projects) {
         <span>${escapeHtml(projectModeLabel())}</span>
       </div>
       <div class="project-pie-layout">
-        <div class="project-pie" style="background: conic-gradient(${gradient || '#e4ebf4 0deg 360deg'});">
+        <div class="project-pie" style="background: conic-gradient(${gradient || '#e4ebf4 0deg 360deg'});" title="${projects.length} total projects">
           <span>${projects.length}</span>
         </div>
         <div class="project-pie-legend">
           ${data.map(([stage, value], index) => `
-            <div>
+            <div class="chart-hoverable" tabindex="0" aria-label="${escapeHtml(`${stage}: ${value} projects`)}" data-chart-tooltip="${escapeHtml(`${stage}: ${value} projects`)}">
               <i style="background:${colors[index]}"></i>
               <span>${escapeHtml(stage)}</span>
               <strong>${value}</strong>
@@ -2342,7 +2346,7 @@ function crispTrendOverview(months, selectedMonth) {
               const barH = Math.max(8, (conversations / maxConversations) * plotH);
               const y = pad.top + plotH - barH;
               return `
-                <rect class="${month.month === selectedMonth ? 'active' : ''}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barH.toFixed(1)}" rx="6">
+                <rect class="${month.month === selectedMonth ? 'active' : ''}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barH.toFixed(1)}" rx="6" tabindex="0" aria-label="${escapeHtml(`${periodLabel(month.month)}: ${crispFormatMetric('conversations', conversations)} conversations`)}">
                   <title>${escapeHtml(periodLabel(month.month))}: ${crispFormatMetric('conversations', conversations)} conversations</title>
                 </rect>
                 <text class="bar-value" x="${xFor(index).toFixed(1)}" y="${(y - 10).toFixed(1)}" text-anchor="middle">${escapeHtml(crispFormatMetric('conversations', conversations))}</text>
@@ -2355,7 +2359,7 @@ function crispTrendOverview(months, selectedMonth) {
               const x = xFor(index);
               const conversations = crispMetricValue(month, 'conversations') ?? 0;
               return `
-                <circle class="conversations" cx="${x.toFixed(1)}" cy="${yForValue(conversations).toFixed(1)}" r="6"><title>${escapeHtml(periodLabel(month.month))}: ${escapeHtml(crispFormatMetric('conversations', conversations))} conversations</title></circle>
+                <circle class="conversations" cx="${x.toFixed(1)}" cy="${yForValue(conversations).toFixed(1)}" r="6" tabindex="0" aria-label="${escapeHtml(`${periodLabel(month.month)}: ${crispFormatMetric('conversations', conversations)} conversations`)}"><title>${escapeHtml(periodLabel(month.month))}: ${escapeHtml(crispFormatMetric('conversations', conversations))} conversations</title></circle>
               `;
             }).join('')}
           </g>
@@ -2609,9 +2613,9 @@ function trendSvg(data) {
   return `
     <svg class="trend-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Monthly issue volume trend">
       <polyline points="${points}" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></polyline>
-      ${data.map(([, value], index) => {
+      ${data.map(([key, value], index) => {
         const [x, y] = points.split(' ')[index].split(',');
-        return `<circle cx="${x}" cy="${y}" r="5"><title>${value} issues</title></circle>`;
+        return `<circle cx="${x}" cy="${y}" r="5" tabindex="0" aria-label="${escapeHtml(`${periodLabel(key)}: ${value} issues`)}"><title>${escapeHtml(periodLabel(key))}: ${value} issues</title></circle>`;
       }).join('')}
     </svg>
   `;
@@ -2642,7 +2646,7 @@ function renderMonthlyVolumePanel(items) {
       <div class="monthly-volume-layout">
         <div class="monthly-bars" aria-label="Monthly issue volume bars">
           ${monthly.map(([key, value]) => `
-            <div class="monthly-bar-item">
+            <div class="monthly-bar-item chart-hoverable" tabindex="0" aria-label="${escapeHtml(`${periodLabel(key)}: ${value} issues`)}" data-chart-tooltip="${escapeHtml(`${periodLabel(key)}: ${value} issues`)}">
               <div class="monthly-bar-track">
                 <div class="monthly-bar-fill" style="height:${Math.max(6, (value / max) * 100)}%"></div>
               </div>
@@ -2703,12 +2707,12 @@ function renderIssueTypeDistribution(items) {
         ${dashboardSelect('distribution_period', 'Period', selected, periodSelectOptions(options))}
       </div>
       <div class="distribution-layout">
-        <div class="donut-chart" style="--donut:${donut.background}">
+        <div class="donut-chart" style="--donut:${donut.background}" title="${donut.total} issues in selected distribution">
           <div><strong>${donut.total}</strong><span>issues</span></div>
         </div>
         <div class="donut-legend">
           ${donut.legend.map((item) => `
-            <div>
+            <div class="chart-hoverable" tabindex="0" aria-label="${escapeHtml(`${item.label}: ${item.value} issues, ${formatPercent(percent(item.value, donut.total))}`)}" data-chart-tooltip="${escapeHtml(`${item.label}: ${item.value} issues, ${formatPercent(percent(item.value, donut.total))}`)}">
               <span style="--legend:${item.color}"></span>
               <strong>${escapeHtml(item.label)}</strong>
               <small>${item.value} / ${formatPercent(percent(item.value, donut.total))}</small>
@@ -2761,6 +2765,8 @@ function renderResolutionRateChart(items) {
             class="resolution-segment ${slug(label)}"
             style="width:${total ? Math.max(2, percent(value, total)) : 0}%; --resolution-color:${colors[label]}"
             title="${escapeHtml(label)}: ${value} issues"
+            tabindex="0"
+            aria-label="${escapeHtml(`${label}: ${value} issues, ${formatPercent(percent(value, total))}`)}"
           ></div>
         `).join('')}
       </div>
@@ -2768,7 +2774,7 @@ function renderResolutionRateChart(items) {
         ${entries.map(([label, value]) => {
           const cardLabel = label === 'Unresolved/Pending' ? 'Unresolved' : label;
           return `
-          <div class="resolution-card ${slug(label)}">
+          <div class="resolution-card ${slug(label)} chart-hoverable" tabindex="0" aria-label="${escapeHtml(`${label}: ${value} issues, ${formatPercent(percent(value, total))}`)}" data-chart-tooltip="${escapeHtml(`${label}: ${value} issues, ${formatPercent(percent(value, total))}`)}">
             <span title="${escapeHtml(label)}">${escapeHtml(cardLabel)}</span>
             <strong>${value}</strong>
             <small>${formatPercent(percent(value, total))} of selected issues</small>

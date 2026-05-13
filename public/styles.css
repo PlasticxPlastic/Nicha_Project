@@ -1062,13 +1062,17 @@ body.dark .issue-card:hover {
 }
 
 .monthly-bar-item {
+  position: relative;
   display: grid;
   grid-template-rows: 1fr auto auto;
   align-items: end;
   gap: 7px;
   min-width: 74px;
   height: 100%;
+  border-radius: var(--radius-sm);
+  padding: 4px;
   text-align: center;
+  transition: background 0.16s ease, transform 0.16s ease;
 }
 
 .monthly-bar-track {
@@ -1140,6 +1144,13 @@ body.dark .issue-card:hover {
   fill: var(--panel);
   stroke: currentColor;
   stroke-width: 3;
+  transition: r 0.16s ease, filter 0.16s ease;
+}
+
+.trend-svg circle:hover,
+.trend-svg circle:focus-visible {
+  r: 7px;
+  filter: drop-shadow(0 4px 8px color-mix(in srgb, var(--brand) 24%, transparent));
 }
 
 .distribution-layout {
@@ -1193,10 +1204,14 @@ body.dark .issue-card:hover {
 }
 
 .donut-legend div {
+  position: relative;
   display: grid;
   grid-template-columns: 12px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
+  border-radius: var(--radius-sm);
+  padding: 3px 5px;
+  transition: background 0.16s ease, transform 0.16s ease;
 }
 
 .donut-legend div > span {
@@ -1279,6 +1294,12 @@ body.dark .issue-card:hover {
 .resolution-segment {
   min-height: 100%;
   background: var(--resolution-color);
+  transition: filter 0.16s ease, min-width 0.16s ease;
+}
+
+.resolution-segment:hover,
+.resolution-segment:focus-visible {
+  filter: saturate(1.16) brightness(1.03);
 }
 
 .resolution-segment + .resolution-segment {
@@ -2359,10 +2380,14 @@ tbody tr:nth-child(even) td {
 }
 
 .bar-row {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(112px, 150px) 1fr minmax(36px, auto);
   align-items: center;
   gap: 10px;
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  transition: background 0.16s ease, transform 0.16s ease;
 }
 
 .bar-label {
@@ -2383,6 +2408,55 @@ tbody tr:nth-child(even) td {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, color-mix(in srgb, var(--blue) 90%, white), var(--brand));
+  transition: filter 0.16s ease, opacity 0.16s ease;
+}
+
+.chart-hoverable {
+  position: relative;
+  cursor: default;
+}
+
+.chart-hoverable:hover,
+.chart-hoverable:focus-visible {
+  background: color-mix(in srgb, var(--brand-soft) 42%, transparent);
+  transform: translateY(-1px);
+}
+
+.chart-hoverable:hover .bar-fill,
+.chart-hoverable:focus-visible .bar-fill,
+.chart-hoverable:hover .monthly-bar-fill,
+.chart-hoverable:focus-visible .monthly-bar-fill {
+  filter: saturate(1.08) brightness(1.03);
+}
+
+.chart-hoverable[data-chart-tooltip]::after {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  z-index: 12;
+  width: max-content;
+  max-width: min(260px, calc(100vw - 40px));
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel) 94%, var(--canvas));
+  box-shadow: var(--shadow-soft);
+  color: var(--text);
+  content: attr(data-chart-tooltip);
+  opacity: 0;
+  padding: 7px 9px;
+  pointer-events: none;
+  text-align: left;
+  transform: translate(-50%, 4px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  white-space: normal;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.chart-hoverable[data-chart-tooltip]:hover::after,
+.chart-hoverable[data-chart-tooltip]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 .panel-title {
@@ -3378,11 +3452,18 @@ body.dark .module-icon {
   filter: drop-shadow(0 8px 10px rgba(47, 69, 104, 0.11));
   stroke: color-mix(in srgb, #ffffff 62%, transparent);
   stroke-width: 1;
+  transition: opacity 0.16s ease, filter 0.16s ease;
 }
 
 .crisp-combo-svg .bars rect.active {
   outline: 0;
   opacity: 0.9;
+}
+
+.crisp-combo-svg .bars rect:hover,
+.crisp-combo-svg .bars rect:focus-visible {
+  opacity: 1;
+  filter: drop-shadow(0 10px 14px rgba(47, 69, 104, 0.16));
 }
 
 .crisp-combo-svg .bar-value {
@@ -3410,6 +3491,13 @@ body.dark .module-icon {
 
 .crisp-combo-svg .points circle {
   stroke-width: 3;
+  transition: r 0.16s ease, filter 0.16s ease;
+}
+
+.crisp-combo-svg .points circle:hover,
+.crisp-combo-svg .points circle:focus-visible {
+  r: 8px;
+  filter: drop-shadow(0 5px 9px rgba(47, 69, 104, 0.18));
 }
 
 .crisp-combo-svg .labels text {
