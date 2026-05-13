@@ -199,6 +199,18 @@ export function getBatches() {
   return db.prepare('SELECT * FROM import_batches ORDER BY imported_at DESC').all();
 }
 
+function projectStageFromSourceStatus(sourceStatus) {
+  const text = String(sourceStatus ?? '').replace(/^\s*\d+\.\s*/, '').trim().toLowerCase();
+  if (!text || text === 'manual') return null;
+  if (/\bplanning\b/.test(text)) return 'Kick-off';
+  if (/\bimplementation\b|\bimplement\b/.test(text)) return 'Onboarding';
+  if (/\btraining\b/.test(text)) return 'Training';
+  if (/\bin\s*progress\b|\binprogress\b/.test(text)) return 'GoLive';
+  if (/\bwarranty\b/.test(text)) return 'GoLive';
+  if (/\bhold\s*projects?\b|\bon\s*hold\b/.test(text)) return 'On Hold';
+  return null;
+}
+
 export function getProjectTrackingProjects() {
   return db.prepare(`
     SELECT *
@@ -207,14 +219,13 @@ export function getProjectTrackingProjects() {
       OR source_status = 'Manual'
       OR LOWER(source_status) LIKE '%planning%'
       OR LOWER(source_status) LIKE '%implement%'
-      OR LOWER(source_status) LIKE '%onboarding%'
-      OR LOWER(source_status) LIKE '%on-boarding%'
       OR LOWER(source_status) LIKE '%training%'
       OR LOWER(source_status) LIKE '%in progress%'
-      OR LOWER(source_status) LIKE '%golive%'
-      OR LOWER(source_status) LIKE '%go live%'
+      OR LOWER(source_status) LIKE '%inprogress%'
       OR LOWER(source_status) LIKE '%warranty%'
-      OR LOWER(source_status) LIKE '%hold%'
+      OR LOWER(source_status) LIKE '%hold project%'
+      OR LOWER(source_status) LIKE '%hold projects%'
+      OR LOWER(source_status) LIKE '%on hold%'
     ORDER BY
       CASE stage
         WHEN 'Kick-off' THEN 1
@@ -227,7 +238,10 @@ export function getProjectTrackingProjects() {
       END,
       COALESCE(kickoff_date, created_at) DESC,
       customer_name
-  `).all();
+  `).all().map((project) => ({
+    ...project,
+    stage: projectStageFromSourceStatus(project.source_status) ?? project.stage
+  }));
 }
 
 export function getProjectTrackingBatches() {

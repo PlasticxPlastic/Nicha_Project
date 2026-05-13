@@ -41,7 +41,11 @@ const state = {
   auth: {
     token: localStorage.getItem(AUTH_TOKEN_KEY) || '',
     user: storedAuthUser(),
-    modal: ''
+    modal: '',
+    draft: {
+      username: '',
+      password: ''
+    }
   },
   openFilter: '',
   openDatePicker: '',
@@ -87,7 +91,20 @@ const state = {
   projectTracking: {
     viewMode: 'monthly',
     activeView: 'board',
-    importReview: null
+    importReview: null,
+    filters: {
+      search: '',
+      package_type: '',
+      stage: '',
+      review: ''
+    }
+  },
+  crisp: {
+    operators: [],
+    batches: [],
+    months: [],
+    activeView: 'performance',
+    selectedMonth: ''
   }
 };
 
@@ -112,12 +129,26 @@ const categories = [
 ];
 
 const projectStages = ['Kick-off', 'Onboarding', 'Training', 'GoLive', 'Warranty', 'On Hold'];
+const projectSalesStageMappings = [
+  { pattern: /\bplanning\b/, stage: 'Kick-off' },
+  { pattern: /\bimplementation\b|\bimplement\b/, stage: 'Onboarding' },
+  { pattern: /\btraining\b/, stage: 'Training' },
+  { pattern: /\bin\s*progress\b|\binprogress\b/, stage: 'GoLive' },
+  { pattern: /\bwarranty\b/, stage: 'GoLive' },
+  { pattern: /\bhold\s*projects?\b|\bon\s*hold\b/, stage: 'On Hold' }
+];
+
+const defaultProjectTrackingFilters = {
+  search: '',
+  package_type: '',
+  stage: '',
+  review: ''
+};
 
 const labels = {
   home: 'Home',
   'project-dashboard': 'Project Dashboard',
   'crisp-performance': 'Crisp Chat',
-  'etaxgo-issue': 'eTaxgo Issue',
   upload: 'Upload',
   'jira-upload': 'Jira Import',
   dashboard: 'Executive Briefing',
@@ -127,8 +158,7 @@ const labels = {
 };
 
 const brandAssets = {
-  venio: './assets/venio-full.png',
-  etaxgo: 'https://www.etaxgo.com/wp-content/uploads/2025/03/eTaxGo-Logo-2025.png'
+  venio: './assets/venio-full.png'
 };
 
 const requiredColumns = [
@@ -164,6 +194,34 @@ const jiraRequiredColumns = [
   'Updated',
   'Resolved'
 ];
+
+const crispColumnLabels = {
+  operator: 'Operator',
+  conversations: 'Conversation Total',
+  rating: 'Rating',
+  firstResponseAverage: 'First Response time (Average)',
+  firstResponseAverageSeconds: 'First Response average raw seconds',
+  resolutionAverage: 'Resolution Time (Average)',
+  resolutionAverageSeconds: 'Resolution average raw seconds'
+};
+
+const crispRequiredColumns = Object.keys(crispColumnLabels);
+
+const crispColumnAliases = {
+  operatorId: ['Operator Id', 'รหัสผู้ดำเนินการ'],
+  operator: ['Operator', 'ผู้ดำเนินการ'],
+  avatar: ['Operator Avatar', 'ผู้ดำเนินการAvatar', 'ผู้ดำเนินการ Avatar'],
+  conversations: ['Conversation Total', 'การสนทนา รวม'],
+  rating: ['ANALYTICS.FIELDS.OPTIONS.RATING'],
+  firstResponseMedian: ['First Response time (Median)', 'เวลาตอบสนองครั้งแรก (มัธยฐาน)'],
+  firstResponseMedianSeconds: ['First Response time (Median) Raw Value (Second)', 'เวลาตอบสนองครั้งแรก (มัธยฐาน) มูลค่าดิบ (วินาที)'],
+  resolutionMedian: ['Resolution Time (Median)', 'เวลาแก้ไข (มัธยฐาน)'],
+  resolutionMedianSeconds: ['Resolution Time (Median) Raw Value (Second)', 'เวลาแก้ไข (มัธยฐาน) มูลค่าดิบ (วินาที)'],
+  firstResponseAverage: ['First Response time (Average)', 'เวลาตอบสนองครั้งแรก (เฉลี่ย)'],
+  firstResponseAverageSeconds: ['First Response time (Average) Raw Value (Second)', 'เวลาตอบสนองครั้งแรก (เฉลี่ย) มูลค่าดิบ (วินาที)'],
+  resolutionAverage: ['Resolution Time (Average)', 'เวลาแก้ไข (เฉลี่ย)'],
+  resolutionAverageSeconds: ['Resolution Time (Average) Raw Value (Second)', 'เวลาแก้ไข (เฉลี่ย) มูลค่าดิบ (วินาที)']
+};
 
 const defaultRules = [
   ['Quotation', 'quotation', 'EN', 10],
@@ -232,6 +290,38 @@ function norm(value) {
 
 function projectNameKey(value) {
   return norm(value).toLowerCase().replace(/\s+/g, ' ');
+}
+
+function normalizeProjectSalesStageStatus(value) {
+  const text = norm(value).replace(/^\s*\d+\.\s*/, '').toLowerCase();
+  if (!text) return '';
+  return projectSalesStageMappings.find(({ pattern }) => pattern.test(text))?.stage ?? '';
+}
+
+function normalizeProjectImportRecord(project) {
+  const sourceStatus = norm(project?.source_status);
+  if (!sourceStatus || sourceStatus === 'Manual') return project;
+  const stage = normalizeProjectSalesStageStatus(sourceStatus);
+  return stage ? { ...project, stage } : null;
+}
+
+function normalizeProjectImportReview(review) {
+  if (!review) return null;
+  const originalProjects = review.projects ?? [];
+  const projects = originalProjects
+    .map(normalizeProjectImportRecord)
+    .filter(Boolean)
+    .map((project) => {
+      const missing_fields = projectMissingFields(project);
+      return { ...project, missing_fields, needs_review: missing_fields.length > 0 };
+    });
+  return {
+    ...review,
+    projects,
+    validRows: projects.length,
+    skippedRows: Number(review.skippedRows ?? 0) + originalProjects.length - projects.length,
+    needsReview: projects.filter((project) => project.needs_review).length
+  };
 }
 
 function slug(value) {
@@ -494,6 +584,21 @@ function formatPercent(value) {
   return `${value.toFixed(value >= 10 ? 0 : 1)}%`;
 }
 
+function formatDurationSeconds(value) {
+  const total = Math.max(0, Math.round(Number(value) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function currentMonthKey() {
+  const today = new Date();
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+}
+
 function topEntry(entries) {
   return entries[0] ?? ['-', 0];
 }
@@ -642,7 +747,6 @@ function icon(name) {
     home: '&#8962;',
     'project-dashboard': '&#9638;',
     'crisp-performance': '&#9729;',
-    'etaxgo-issue': 'E',
     upload: '&#8593;',
     'jira-upload': '&#8679;',
     dashboard: '&#9638;',
@@ -668,8 +772,7 @@ function moduleIcon(name) {
   const icons = {
     project: '&#9638;',
     crisp: '&#9711;',
-    venio: 'V',
-    etaxgo: 'E'
+    venio: 'V'
   };
   return icons[name] ?? '&bull;';
 }
@@ -1007,8 +1110,7 @@ function renderShell(content) {
     { key: 'home', label: labels.home },
     { key: 'project-dashboard', label: labels['project-dashboard'] },
     { key: 'crisp-performance', label: labels['crisp-performance'] },
-    { key: 'dashboard', label: 'Venio Issue' },
-    { key: 'etaxgo-issue', label: labels['etaxgo-issue'] }
+    { key: 'dashboard', label: 'Venio Issue' }
   ];
   const venioNav = ['upload', 'jira-upload', 'board', 'table', 'settings'];
   const venioWorkspaceViews = ['dashboard', ...venioNav];
@@ -1100,13 +1202,13 @@ function renderAuthGate() {
           <div class="auth-body">
             <label>
               <span>Username</span>
-              <input data-auth-field="username" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="for example: nicha">
+              <input data-auth-field="username" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="for example: nicha" value="${escapeHtml(state.auth.draft.username)}">
               <small>Use the same username on another computer to open your workspace.</small>
             </label>
             <label>
               <span>Password</span>
               <div class="auth-password-wrap">
-                <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="At least 3 characters">
+                <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="At least 3 characters" value="${escapeHtml(state.auth.draft.password)}">
                 <button type="button" data-action="toggle-password">Show</button>
               </div>
               <small>This login is intentionally simple for internal dashboard use.</small>
@@ -1165,16 +1267,10 @@ function projectPageHeader(title, hint) {
 }
 
 function renderLanding() {
-  const m = metrics(state.issues);
-  const issueCount = state.issues.length;
+  const signedIn = Boolean(state.auth.user);
   const scopedVenioIssues = venioIssues(state.issues);
   const venioIssueCount = scopedVenioIssues.length;
   const venioOpen = metrics(scopedVenioIssues).open;
-  const companyCounts = countBy(state.issues, 'project_name');
-  const companySlides = companyCounts.length ? companyCounts : [['No project data', 0]];
-  const datasetLabel = issueCount
-    ? `${issueCount} total issues loaded`
-    : 'No issues loaded yet';
   const modules = [
     {
       key: 'project-dashboard',
@@ -1190,11 +1286,11 @@ function renderLanding() {
       key: 'crisp-performance',
       icon: 'crisp',
       title: 'Crisp Chat Performance',
-      status: 'Not yet',
-      meta: 'Support response analytics',
-      action: 'Coming soon',
-      variant: 'coming-soon',
-      available: false
+      status: 'Live',
+      meta: `${state.crisp.operators.length} operators loaded`,
+      action: 'Open workspace',
+      variant: 'live',
+      available: true
     },
     {
       key: 'dashboard',
@@ -1207,18 +1303,6 @@ function renderLanding() {
       action: 'Open workspace',
       variant: 'live',
       available: true
-    },
-    {
-      key: 'etaxgo-issue',
-      icon: 'etaxgo',
-      brand: 'etaxgo',
-      title: 'eTaxgo Issue',
-      status: 'Not configured',
-      meta: 'Issue insight workspace',
-      description: 'Workspace shell is present, but no eTaxgo issue setup is active yet.',
-      action: 'Prepare workspace',
-      variant: 'warning',
-      available: true
     }
   ];
 
@@ -1229,13 +1313,22 @@ function renderLanding() {
           ${brandLogo('venio', 'Venio', 'brand-logo-header')}
           <span>Insight Hub</span>
         </div>
-        <button class="landing-primary-action" data-view="dashboard" aria-label="Open Venio Issue workspace">Open Venio Issue</button>
+        <div class="landing-auth-actions">
+          ${signedIn ? `
+            <span class="landing-user-pill">${escapeHtml(state.auth.user.username)}</span>
+            <button class="landing-primary-action" data-view="dashboard" aria-label="Open Venio Issue workspace">Open Venio Issue</button>
+            <button class="button ghost" data-action="sign-out">Sign out</button>
+          ` : `
+            <button class="button ghost" data-action="open-auth" data-mode="signin">Sign in</button>
+            <button class="landing-primary-action" data-action="open-auth" data-mode="register">Register</button>
+          `}
+        </div>
       </header>
       <section class="landing-hero">
         <div class="landing-copy">
           <div class="landing-kicker">Operations Intelligence</div>
           <h1>Choose a workspace</h1>
-          <p>One local hub for issue reporting, service quality, and project visibility.</p>
+          <p>${signedIn ? 'Select a workspace to continue with your private saved data.' : 'Sign in or register from this hub page before opening any workspace.'}</p>
           <div class="landing-context-pills" aria-label="Venio CRM context">
             <span>Connecting your customers</span>
             <span>CRM</span>
@@ -1243,53 +1336,32 @@ function renderLanding() {
             <span>Analytics</span>
           </div>
         </div>
-        <div class="landing-visual-stack">
-          <aside class="landing-dataset-panel" aria-label="Imported issue dataset summary by company">
-            <div class="dataset-head">
-              <span>Imported dataset</span>
-              <strong>All companies</strong>
-            </div>
-            <div class="dataset-count">${issueCount}</div>
-            <p>${escapeHtml(datasetLabel)}</p>
-            <small>${venioIssueCount} of these are Venio issues. The rest remain visible by company/project.</small>
-            <div class="company-carousel" aria-label="Issue count by company or project">
-              <div class="company-carousel-track">
-                ${[...companySlides, ...companySlides].map(([company, count]) => `
-                  <span>
-                    <strong>${escapeHtml(company || 'Unknown')}</strong>
-                    <small>${count} issue${count === 1 ? '' : 's'}</small>
-                  </span>
-                `).join('')}
-              </div>
-            </div>
-            <div class="dataset-meta">
-              <span class="status-dot live"></span>
-              <span>Live workspace: Venio Issue</span>
-            </div>
-          </aside>
-        </div>
       </section>
       <section class="workspace-section" aria-labelledby="workspace-title">
         <div class="workspace-section-head">
           <div>
             <h2 id="workspace-title">Workspaces</h2>
-            <p>Open the live Venio issue workspace or review upcoming modules.</p>
+            <p>${signedIn ? 'Open the live workspaces connected to your account.' : 'You can see the hub menu, but workspace access requires sign in.'}</p>
           </div>
         </div>
         <div class="module-grid">
           ${modules.map(workspaceCard).join('')}
         </div>
       </section>
+      ${authModal()}
+      ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
     </main>
   `;
 }
 
 function workspaceCard(module) {
   const disabledText = !module.available ? 'true' : 'false';
-  const cardLabel = `${module.title}. Status: ${module.status}. ${module.action}.`;
+  const requiresSignIn = !state.auth.user && module.available;
+  const actionLabel = requiresSignIn ? 'Sign in to open' : module.action;
+  const cardLabel = `${module.title}. Status: ${module.status}. ${actionLabel}.`;
   return `
     <button
-      class="module-card ${module.variant}"
+      class="module-card ${module.variant} ${requiresSignIn ? 'locked' : ''}"
       data-view="${module.key}"
       data-availability="${module.available ? 'available' : 'coming-soon'}"
       aria-label="${escapeHtml(cardLabel)}"
@@ -1303,7 +1375,7 @@ function workspaceCard(module) {
         <small>${escapeHtml(module.meta)}</small>
         ${module.description ? `<em>${escapeHtml(module.description)}</em>` : ''}
       </span>
-      <span class="module-action ${module.variant}">${escapeHtml(module.action)}</span>
+      <span class="module-action ${module.variant}">${escapeHtml(actionLabel)}</span>
     </button>
   `;
 }
@@ -1610,6 +1682,78 @@ function projectViewTabs() {
   `;
 }
 
+function uniqueProjectValues(projects, mapper) {
+  return [...new Set(projects.map(mapper).map(norm).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function filteredProjectTrackingProjects(projects) {
+  const filters = state.projectTracking.filters ?? defaultProjectTrackingFilters;
+  const search = norm(filters.search).toLowerCase();
+  return projects.filter((project) => {
+    if (search) {
+      const haystack = [
+        project.customer_name,
+        project.project_name,
+        project.package_type,
+        project.package_detail,
+        project.notes
+      ].map(norm).join(' ').toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    if (filters.package_type && norm(project.package_type) !== filters.package_type) return false;
+    if (filters.stage && projectStageGroup(project) !== filters.stage) return false;
+    if (filters.review === 'needs-review' && !projectMissingFields(project).length) return false;
+    if (filters.review === 'complete' && projectMissingFields(project).length) return false;
+    return true;
+  });
+}
+
+function projectBoardFilters(projects, filteredProjects) {
+  const filters = state.projectTracking.filters ?? defaultProjectTrackingFilters;
+  const packageOptions = uniqueProjectValues(projects, (project) => project.package_type);
+  const activeCount = [
+    filters.search,
+    filters.package_type,
+    filters.stage,
+    filters.review
+  ].filter(Boolean).length;
+  return `
+    <div class="project-board-filterbar">
+      <label class="project-filter-search">
+        <span>Search</span>
+        <input type="search" data-project-filter="search" value="${escapeHtml(filters.search)}" placeholder="Customer, project, package...">
+      </label>
+      <label>
+        <span>Package</span>
+        <select data-project-filter-one="package_type">
+          <option value="">All packages</option>
+          ${packageOptions.map((pack) => `<option value="${escapeHtml(pack)}" ${filters.package_type === pack ? 'selected' : ''}>${escapeHtml(pack)}</option>`).join('')}
+        </select>
+      </label>
+      <label>
+        <span>Stage</span>
+        <select data-project-filter-one="stage">
+          <option value="">All stages</option>
+          ${['Kick-off', 'Onboarding', 'Training', 'GoLive', 'On Hold'].map((stage) => `<option value="${escapeHtml(stage)}" ${filters.stage === stage ? 'selected' : ''}>${escapeHtml(stage)}</option>`).join('')}
+        </select>
+      </label>
+      <label>
+        <span>Review</span>
+        <select data-project-filter-one="review">
+          <option value="">All records</option>
+          <option value="needs-review" ${filters.review === 'needs-review' ? 'selected' : ''}>Needs review</option>
+          <option value="complete" ${filters.review === 'complete' ? 'selected' : ''}>Complete records</option>
+        </select>
+      </label>
+      <div class="project-filter-summary">
+        <strong>${filteredProjects.length}</strong>
+        <span>of ${projects.length} projects</span>
+      </div>
+      <button class="button ghost" type="button" data-action="reset-project-filters" ${activeCount ? '' : 'disabled'}>Reset</button>
+    </div>
+  `;
+}
+
 function projectKanbanBoard(projects) {
   const columns = projectBoardColumns(projects);
   return `
@@ -1731,7 +1875,16 @@ function projectActiveView(projects) {
     calendar: projectCalendarView
   };
   if (!renderers[state.projectTracking.activeView]) state.projectTracking.activeView = 'board';
-  return renderers[state.projectTracking.activeView](projects);
+  const filteredProjects = filteredProjectTrackingProjects(projects);
+  return `
+    ${projectBoardFilters(projects, filteredProjects)}
+    ${filteredProjects.length ? renderers[state.projectTracking.activeView](filteredProjects) : `
+      <section class="panel project-empty-board">
+        <h2>No projects match these filters</h2>
+        <p class="subtle">Adjust package, stage, review status, or search keywords.</p>
+      </section>
+    `}
+  `;
 }
 
 function projectInput(project, field, type = 'text') {
@@ -1860,12 +2013,521 @@ function renderProjectDashboard() {
   `);
 }
 
+function crispWeightedAverage(operators, field, options = {}) {
+  let weightedTotal = 0;
+  let weight = 0;
+  for (const operator of operators) {
+    const conversations = number(operator.conversations);
+    const value = Number(operator[field]);
+    if (!conversations || !Number.isFinite(value)) continue;
+    if (options.excludeZero && value <= 0) continue;
+    weightedTotal += value * conversations;
+    weight += conversations;
+  }
+  return weight ? weightedTotal / weight : null;
+}
+
+function crispMetrics(operators) {
+  const totalConversations = operators.reduce((sum, operator) => sum + number(operator.conversations), 0);
+  const ratedConversations = operators
+    .filter((operator) => number(operator.rating) > 0)
+    .reduce((sum, operator) => sum + number(operator.conversations), 0);
+  const activeOperators = operators.filter((operator) => number(operator.conversations) > 0);
+  const avgRating = crispWeightedAverage(operators, 'rating', { excludeZero: true });
+  const avgResponseSeconds = crispWeightedAverage(operators, 'firstResponseAverageSeconds');
+  const avgResolutionSeconds = crispWeightedAverage(operators, 'resolutionAverageSeconds');
+  const topVolume = [...activeOperators].sort((a, b) => number(b.conversations) - number(a.conversations))[0] ?? null;
+  const fastestResponse = [...activeOperators]
+    .filter((operator) => Number.isFinite(Number(operator.firstResponseAverageSeconds)))
+    .sort((a, b) => number(a.firstResponseAverageSeconds) - number(b.firstResponseAverageSeconds))[0] ?? null;
+  const slowestResolution = [...activeOperators]
+    .filter((operator) => Number.isFinite(Number(operator.resolutionAverageSeconds)))
+    .sort((a, b) => number(b.resolutionAverageSeconds) - number(a.resolutionAverageSeconds))[0] ?? null;
+  return {
+    totalConversations,
+    ratedConversations,
+    avgRating,
+    avgResponseSeconds,
+    avgResolutionSeconds,
+    topVolume,
+    fastestResponse,
+    slowestResolution
+  };
+}
+
+function crispRatingLabel(value) {
+  const rating = Number(value);
+  return rating > 0 ? rating.toFixed(2) : 'No rating';
+}
+
+function crispOperatorTable(operators) {
+  const rows = [...operators].sort((a, b) => number(b.conversations) - number(a.conversations));
+  return `
+    <section class="panel crisp-table-panel">
+      <div class="panel-title">
+        <h2>Operator Performance</h2>
+        <span>${rows.length} operators</span>
+      </div>
+      <div class="table-wrap crisp-table-wrap">
+        <table class="crisp-table">
+          <thead>
+            <tr>
+              <th>Operator</th>
+              <th>Conv.</th>
+              <th>Rating</th>
+              <th>Median Response</th>
+              <th>Median Resolution</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((operator) => `
+                <tr>
+                  <td>
+                    <div class="crisp-operator-cell">
+                      ${operator.avatar ? `<img src="${escapeHtml(operator.avatar)}" alt="">` : '<span></span>'}
+                      <strong title="${escapeHtml(operator.operator)}">${escapeHtml(operator.operator)}</strong>
+                    </div>
+                  </td>
+                  <td>${number(operator.conversations)}</td>
+                  <td>${escapeHtml(crispRatingLabel(operator.rating))}</td>
+                  <td>${escapeHtml(operator.firstResponseMedianText || '-')}</td>
+                  <td>${escapeHtml(operator.resolutionMedianText || '-')}</td>
+                </tr>
+              `).join('') || '<tr><td colspan="5" class="subtle">No Crisp data imported yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function crispMonthOptions() {
+  return [...(state.crisp.months ?? [])].sort((a, b) => b.month.localeCompare(a.month));
+}
+
+function crispMonthSeries(months) {
+  return [...months].sort((a, b) => a.month.localeCompare(b.month));
+}
+
+function selectedCrispMonthEntry() {
+  const months = crispMonthOptions();
+  if (!months.length) return null;
+  const selected = state.crisp.selectedMonth && months.find((month) => month.month === state.crisp.selectedMonth);
+  return selected || months[0];
+}
+
+function crispViewTabs() {
+  const tabs = [
+    ['performance', 'Performance'],
+    ['import', 'Import']
+  ];
+  return `
+    <div class="project-board-tabs crisp-tabs" aria-label="Crisp Chat views">
+      ${tabs.map(([key, label]) => `
+        <button class="${state.crisp.activeView === key ? 'active' : ''}" type="button" data-crisp-view="${key}">
+          ${escapeHtml(label)}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function crispMonthPicker(months, selectedMonth) {
+  return `
+    <label class="dashboard-control crisp-month-picker">
+      <span>Month</span>
+      <select data-crisp-selected-month>
+        ${months.map((month) => `<option value="${escapeHtml(month.month)}" ${selectedMonth === month.month ? 'selected' : ''}>${escapeHtml(periodLabel(month.month))}</option>`).join('')}
+      </select>
+    </label>
+  `;
+}
+
+function crispMetricValue(month, metric) {
+  if (!month) return null;
+  const values = {
+    conversations: month.total_conversations,
+    rating: month.avg_rating,
+    response: month.avg_response_seconds,
+    resolution: month.avg_resolution_seconds,
+    operators: month.valid_rows
+  };
+  const value = values[metric];
+  return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function crispFormatMetric(metric, value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
+  if (metric === 'rating') return Number(value).toFixed(2);
+  if (metric === 'response' || metric === 'resolution') return formatDurationSeconds(value);
+  return String(Math.round(Number(value)));
+}
+
+function crispDelta(current, previous, metric, lowerIsBetter = false) {
+  if (current === null || previous === null || previous === undefined) {
+    return { text: '-', tone: 'muted', detail: 'No previous month' };
+  }
+  const change = current - previous;
+  const abs = Math.abs(change);
+  const improved = lowerIsBetter ? change < 0 : change > 0;
+  const worsened = lowerIsBetter ? change > 0 : change < 0;
+  const prefix = change > 0 ? '+' : change < 0 ? '-' : '';
+  return {
+    text: `${prefix}${crispFormatMetric(metric, abs)}`,
+    tone: improved ? 'ok' : worsened ? 'danger' : 'muted',
+    detail: change === 0 ? 'No change vs previous month' : `${improved ? 'Improved' : 'Worse'} vs previous month`
+  };
+}
+
+function crispPreviousMonth(months, selectedMonth) {
+  const series = crispMonthSeries(months);
+  const index = series.findIndex((month) => month.month === selectedMonth);
+  return index > 0 ? series[index - 1] : null;
+}
+
+function crispMovementCard(label, metric, currentMonth, previousMonth, lowerIsBetter = false) {
+  const current = crispMetricValue(currentMonth, metric);
+  const previous = crispMetricValue(previousMonth, metric);
+  const delta = crispDelta(current, previous, metric, lowerIsBetter);
+  return `
+    <article class="crisp-trend-card ${delta.tone}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(crispFormatMetric(metric, current))}</strong>
+      <small>${escapeHtml(delta.text)} ${previousMonth ? `from ${periodLabel(previousMonth.month)}` : 'from previous month'}</small>
+      <em>${escapeHtml(delta.detail)}</em>
+    </article>
+  `;
+}
+
+function crispMonthlyMovement(months, currentMonth) {
+  const previousMonth = crispPreviousMonth(months, currentMonth?.month);
+  return `
+    <section class="crisp-trend-grid" aria-label="Month over month Crisp trends">
+      ${crispMovementCard('Conversations', 'conversations', currentMonth, previousMonth)}
+      ${crispMovementCard('Avg. Rating', 'rating', currentMonth, previousMonth)}
+      ${crispMovementCard('Avg. Response', 'response', currentMonth, previousMonth, true)}
+      ${crispMovementCard('Avg. Resolution', 'resolution', currentMonth, previousMonth, true)}
+    </section>
+  `;
+}
+
+function crispScale(value, min, max, invert = false) {
+  if (!Number.isFinite(Number(value))) return 0;
+  if (max <= min) return 50;
+  const ratio = (Number(value) - min) / (max - min);
+  return (invert ? 1 - ratio : ratio) * 100;
+}
+
+function crispMetricRange(months, metric, includeZero = false) {
+  const values = months.map((month) => crispMetricValue(month, metric)).filter((value) => value !== null);
+  if (!values.length) return { min: 0, max: 1 };
+  if (includeZero) values.push(0);
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values)
+  };
+}
+
+function crispConversationInsight(series) {
+  if (!series.length) return '';
+  const values = series.map((month) => crispMetricValue(month, 'conversations') ?? 0);
+  const latest = series[series.length - 1];
+  const previous = series[series.length - 2];
+  const latestValue = crispMetricValue(latest, 'conversations') ?? 0;
+  const previousValue = previous ? crispMetricValue(previous, 'conversations') ?? 0 : null;
+  const total = values.reduce((sum, value) => sum + value, 0);
+  const average = values.length ? total / values.length : 0;
+  const peak = [...series].sort((a, b) => (crispMetricValue(b, 'conversations') ?? 0) - (crispMetricValue(a, 'conversations') ?? 0))[0];
+  const change = previousValue === null ? null : latestValue - previousValue;
+  const changeText = change === null
+    ? 'No previous month'
+    : `${change >= 0 ? '+' : ''}${Math.round(change)} vs ${periodLabel(previous.month)}`;
+  const changeTone = change === null ? 'muted' : change >= 0 ? 'up' : 'down';
+  return `
+    <div class="crisp-combo-context" aria-label="Monthly trend context">
+      <article>
+        <span>Latest month</span>
+        <strong>${escapeHtml(periodLabel(latest.month))}</strong>
+        <small>${escapeHtml(crispFormatMetric('conversations', latestValue))} conversations</small>
+      </article>
+      <article>
+        <span>Month change</span>
+        <strong class="${changeTone}">${escapeHtml(changeText)}</strong>
+        <small>${previous ? `Compared with ${escapeHtml(periodLabel(previous.month))}` : 'Needs another month'}</small>
+      </article>
+      <article>
+        <span>Peak month</span>
+        <strong>${escapeHtml(periodLabel(peak?.month))}</strong>
+        <small>${escapeHtml(crispFormatMetric('conversations', crispMetricValue(peak, 'conversations')))} conversations</small>
+      </article>
+      <article>
+        <span>Monthly average</span>
+        <strong>${escapeHtml(crispFormatMetric('conversations', average))}</strong>
+        <small>${escapeHtml(crispFormatMetric('conversations', total))} total in this view</small>
+      </article>
+    </div>
+  `;
+}
+
+function crispTrendOverview(months, selectedMonth) {
+  const series = crispMonthSeries(months).slice(-12);
+  if (!series.length) {
+    return `
+      <section class="panel crisp-combo-trend-panel">
+        <div class="panel-title">
+          <div>
+            <h2>Monthly Trend Overview</h2>
+            <span>Import at least one monthly Crisp CSV to see conversation volume over time.</span>
+          </div>
+        </div>
+        <div class="crisp-combo-empty">
+          <strong>No monthly Crisp trend yet</strong>
+          <span>Use the Import tab to add monthly operator exports. The chart will focus only on conversation volume.</span>
+        </div>
+      </section>
+    `;
+  }
+  const range = crispMetricRange(series, 'conversations', true);
+  const maxConversations = Math.max(1, range.max);
+  const width = Math.max(760, series.length * 118);
+  const height = 340;
+  const pad = { top: 34, right: 36, bottom: 64, left: 84 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const bandW = plotW / Math.max(series.length, 1);
+  const xFor = (index) => pad.left + (bandW * index) + (bandW / 2);
+  const yForValue = (value) => pad.top + (1 - Math.max(0, Math.min(1, Number(value) / maxConversations))) * plotH;
+  const linePoints = series
+    .map((month, index) => `${xFor(index).toFixed(1)},${yForValue(crispMetricValue(month, 'conversations') ?? 0).toFixed(1)}`)
+    .join(' ');
+  const areaPoints = `${xFor(0).toFixed(1)},${(pad.top + plotH).toFixed(1)} ${linePoints} ${xFor(series.length - 1).toFixed(1)},${(pad.top + plotH).toFixed(1)}`;
+  const barWidth = Math.max(38, Math.min(66, bandW * 0.44));
+  return `
+    <section class="panel crisp-combo-trend-panel">
+      <div class="panel-title">
+        <div>
+          <h2>Conversation Trend</h2>
+          <span>Last ${series.length} imported month${series.length === 1 ? '' : 's'} / monthly Crisp conversation volume only</span>
+        </div>
+      </div>
+      ${crispConversationInsight(series)}
+      <div class="crisp-combo-chart" aria-label="Monthly Crisp conversation trend" style="--trend-width:${width}px">
+        <svg class="crisp-combo-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Monthly conversation trend">
+          <defs>
+            <linearGradient id="conversationBarGradient" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#8cc7f5"></stop>
+              <stop offset="56%" stop-color="#8b8ee8"></stop>
+              <stop offset="100%" stop-color="#6fd0ad"></stop>
+            </linearGradient>
+            <linearGradient id="conversationAreaGradient" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#8cc7f5" stop-opacity="0.16"></stop>
+              <stop offset="100%" stop-color="#6fd0ad" stop-opacity="0"></stop>
+            </linearGradient>
+          </defs>
+          <g class="grid">
+            ${[0, 25, 50, 75, 100].map((tick) => {
+              const y = pad.top + (1 - tick / 100) * plotH;
+              const label = Math.round(maxConversations * tick / 100);
+              return `
+                <line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${(width - pad.right).toFixed(1)}" y2="${y.toFixed(1)}"></line>
+                <text class="axis-value" x="${pad.left - 12}" y="${(y + 4).toFixed(1)}" text-anchor="end">${label}</text>
+              `;
+            }).join('')}
+          </g>
+          <polygon class="conversation-area" points="${areaPoints}"></polygon>
+          <g class="bars">
+            ${series.map((month, index) => {
+              const conversations = crispMetricValue(month, 'conversations') ?? 0;
+              const x = xFor(index) - barWidth / 2;
+              const barH = Math.max(8, (conversations / maxConversations) * plotH);
+              const y = pad.top + plotH - barH;
+              return `
+                <rect class="${month.month === selectedMonth ? 'active' : ''}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barH.toFixed(1)}" rx="6">
+                  <title>${escapeHtml(periodLabel(month.month))}: ${crispFormatMetric('conversations', conversations)} conversations</title>
+                </rect>
+                <text class="bar-value" x="${xFor(index).toFixed(1)}" y="${(y - 10).toFixed(1)}" text-anchor="middle">${escapeHtml(crispFormatMetric('conversations', conversations))}</text>
+              `;
+            }).join('')}
+          </g>
+          <polyline class="trend-line conversations" points="${linePoints}"></polyline>
+          <g class="points">
+            ${series.map((month, index) => {
+              const x = xFor(index);
+              const conversations = crispMetricValue(month, 'conversations') ?? 0;
+              return `
+                <circle class="conversations" cx="${x.toFixed(1)}" cy="${yForValue(conversations).toFixed(1)}" r="6"><title>${escapeHtml(periodLabel(month.month))}: ${escapeHtml(crispFormatMetric('conversations', conversations))} conversations</title></circle>
+              `;
+            }).join('')}
+          </g>
+          <g class="labels">
+            ${series.map((month, index) => `
+              <text x="${xFor(index).toFixed(1)}" y="${height - 22}" text-anchor="middle">${escapeHtml(periodLabel(month.month))}</text>
+            `).join('')}
+          </g>
+        </svg>
+        <p class="crisp-combo-note">Each bar is the total Crisp conversations imported for that month. The line connects month-to-month volume so spikes and drops are easy to see.</p>
+        <div class="crisp-combo-summary">
+          ${series.map((month) => {
+            const conversations = crispMetricValue(month, 'conversations') ?? 0;
+          return `
+            <article class="${month.month === selectedMonth ? 'active' : ''}">
+              <strong>${escapeHtml(periodLabel(month.month))}</strong>
+              <span>${escapeHtml(crispFormatMetric('conversations', conversations))} conversations</span>
+            </article>
+          `;
+        }).join('') || '<p class="subtle">Import monthly Crisp data to see trends.</p>'}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function crispMonthlyComparison(months) {
+  const series = crispMonthSeries(months);
+  return `
+    <section class="panel crisp-history-panel">
+      <div class="panel-title">
+        <h2>Monthly Comparison</h2>
+        <span>${months.length} months</span>
+      </div>
+      <div class="table-wrap compact-table">
+        <table>
+          <thead><tr><th>Month</th><th>Operators</th><th>Conversations</th><th>Conv. Δ</th><th>Avg Rating</th><th>Rating Δ</th><th>Avg Response</th><th>Response Δ</th><th>Avg Resolution</th><th>Resolution Δ</th></tr></thead>
+          <tbody>
+            ${series.map((month, index) => {
+              const previous = series[index - 1];
+              const convDelta = crispDelta(crispMetricValue(month, 'conversations'), crispMetricValue(previous, 'conversations'), 'conversations');
+              const ratingDelta = crispDelta(crispMetricValue(month, 'rating'), crispMetricValue(previous, 'rating'), 'rating');
+              const responseDelta = crispDelta(crispMetricValue(month, 'response'), crispMetricValue(previous, 'response'), 'response', true);
+              const resolutionDelta = crispDelta(crispMetricValue(month, 'resolution'), crispMetricValue(previous, 'resolution'), 'resolution', true);
+              return `
+              <tr>
+                <td><strong>${escapeHtml(periodLabel(month.month))}</strong></td>
+                <td>${month.valid_rows}</td>
+                <td>${month.total_conversations}</td>
+                <td><span class="crisp-delta ${convDelta.tone}">${escapeHtml(convDelta.text)}</span></td>
+                <td>${month.avg_rating === null ? '-' : Number(month.avg_rating).toFixed(2)}</td>
+                <td><span class="crisp-delta ${ratingDelta.tone}">${escapeHtml(ratingDelta.text)}</span></td>
+                <td>${month.avg_response_seconds === null ? '-' : formatDurationSeconds(month.avg_response_seconds)}</td>
+                <td><span class="crisp-delta ${responseDelta.tone}">${escapeHtml(responseDelta.text)}</span></td>
+                <td>${month.avg_resolution_seconds === null ? '-' : formatDurationSeconds(month.avg_resolution_seconds)}</td>
+                <td><span class="crisp-delta ${resolutionDelta.tone}">${escapeHtml(resolutionDelta.text)}</span></td>
+              </tr>
+            `;
+            }).join('') || '<tr><td colspan="10" class="subtle">No monthly Crisp imports yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderCrispImportView(latest) {
+  const month = state.crisp.selectedMonth || currentMonthKey();
+  const latestMonth = latest?.month ?? latest?.imported_at?.slice(0, 7) ?? '';
+  return `
+    <section class="panel crisp-import-panel">
+      <div class="crisp-import-copy">
+        <div class="section-label">CSV Import</div>
+        <h2>Operator Analytics Export</h2>
+        <p class="subtle">Choose the month this export belongs to. Importing the same month again replaces that month with the updated file.</p>
+      </div>
+      <div class="project-import-actions crisp-import-actions">
+        <label class="dashboard-control">
+          <span>Import month</span>
+          <input type="month" data-crisp-import-month value="${escapeHtml(month)}">
+        </label>
+        <input type="file" accept=".csv,text/csv" data-action="crisp-csv-file">
+        <button class="button primary" data-action="upload-crisp-csv">${icon('upload')} Import Crisp CSV</button>
+      </div>
+      <div class="project-import-meta">
+        ${latest ? `Latest: <strong>${escapeHtml(middleEllipsis(latest.filename, 36))}</strong> / ${escapeHtml(periodLabel(latestMonth))} / ${latest.valid_rows} operators / ${displayDate(latest.imported_at)}` : 'No Crisp CSV imported yet.'}
+      </div>
+    </section>
+
+    <section class="panel crisp-history-panel">
+      <div class="panel-title">
+        <h2>Import History</h2>
+        <span>${state.crisp.batches.length} imports</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Month</th><th>Imported</th><th>Filename</th><th>Operators</th><th>Skipped</th><th>Conversations</th><th>Avg Rating</th><th>Avg Response</th><th>Avg Resolution</th></tr></thead>
+          <tbody>
+            ${state.crisp.batches.map((batch) => `
+              <tr>
+                <td><strong>${escapeHtml(periodLabel(batch.month ?? batch.imported_at?.slice(0, 7) ?? ''))}</strong></td>
+                <td>${formatDate(batch.imported_at)}</td>
+                <td>${escapeHtml(batch.filename)}</td>
+                <td>${batch.valid_rows}</td>
+                <td>${batch.skipped_rows}</td>
+                <td>${batch.total_conversations}</td>
+                <td>${batch.avg_rating === null ? '-' : Number(batch.avg_rating).toFixed(2)}</td>
+                <td>${batch.avg_response_seconds === null ? '-' : formatDurationSeconds(batch.avg_response_seconds)}</td>
+                <td>${batch.avg_resolution_seconds === null ? '-' : formatDurationSeconds(batch.avg_resolution_seconds)}</td>
+              </tr>
+            `).join('') || '<tr><td colspan="9" class="subtle">No imports yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderCrispPerformance() {
+  if (!['performance', 'import'].includes(state.crisp.activeView)) state.crisp.activeView = 'performance';
+  const months = crispMonthOptions();
+  const activeMonth = selectedCrispMonthEntry();
+  if (activeMonth && state.crisp.selectedMonth !== activeMonth.month) state.crisp.selectedMonth = activeMonth.month;
+  const operators = activeMonth?.operators ?? [];
+  const latest = state.crisp.batches?.[0];
+  const metrics = crispMetrics(operators);
+  const monthLabel = activeMonth ? periodLabel(activeMonth.month) : 'No month selected';
+
+  return renderShell(`
+    <div class="page-title">
+      <div>
+        <h1>Crisp Chat Performance</h1>
+        <div class="subtle">Operator response, rating, and resolution quality by monthly Crisp export.</div>
+      </div>
+      <div class="page-meta">
+        <span><strong>${metrics.totalConversations}</strong> conversations</span>
+        <span><strong>${operators.length}</strong> operators</span>
+        <span><strong>${escapeHtml(monthLabel)}</strong></span>
+      </div>
+    </div>
+
+    ${crispViewTabs()}
+
+    ${state.crisp.activeView === 'import' ? renderCrispImportView(latest) : `
+      <section class="project-dashboard-toolbar crisp-month-toolbar">
+        <div>
+          <div class="section-label">Selected monthly snapshot</div>
+          <strong>${escapeHtml(monthLabel)}</strong>
+        </div>
+        ${months.length ? crispMonthPicker(months, activeMonth?.month ?? '') : '<span class="subtle">Import monthly Crisp data to begin comparison.</span>'}
+      </section>
+
+      <section class="cards crisp-kpis">
+        ${card('Total Conversations', metrics.totalConversations, 'Selected month volume')}
+        ${card('Operators', operators.length, 'Selected month operators')}
+        ${card('Avg. Rating', metrics.avgRating === null ? '-' : metrics.avgRating.toFixed(2), 'Excludes 0 = no rating data')}
+        ${card('Rated Conversations', metrics.ratedConversations, 'Rows with rating data')}
+      </section>
+
+      ${activeMonth ? crispMonthlyMovement(months, activeMonth) : ''}
+      ${crispTrendOverview(months, activeMonth?.month ?? '')}
+      ${crispMonthlyComparison(months)}
+      ${crispOperatorTable(operators)}
+    `}
+  `);
+}
+
 function renderPlaceholder(title, status) {
-  const isEtaxgo = title.toLowerCase().startsWith('etaxgo');
   return renderShell(`
     ${pageHeader(title, status)}
-    <section class="placeholder-panel ${isEtaxgo ? 'etaxgo-placeholder' : ''}">
-      ${isEtaxgo ? brandLogo('etaxgo', 'eTaxGo', 'placeholder-logo') : '<div class="module-icon large">&#9638;</div>'}
+    <section class="placeholder-panel">
+      <div class="module-icon large">&#9638;</div>
       <h2>${escapeHtml(title)}</h2>
       <p class="subtle">${escapeHtml(status)}</p>
       <div class="toolbar">
@@ -2032,13 +2694,13 @@ function renderIssueTypeDistribution(items) {
           <h2>Issue Type Distribution</h2>
           <span>Donut view by ${grain}</span>
         </div>
-        <div class="dashboard-controls">
-          ${dashboardSelect('distribution_grain', 'Group', grain, [
-            { value: 'month', label: 'Month' },
-            { value: 'quarter', label: 'Quarter' }
-          ])}
-          ${dashboardSelect('distribution_period', 'Period', selected, periodSelectOptions(options))}
-        </div>
+      </div>
+      <div class="distribution-filter-bar" aria-label="Issue type distribution filters">
+        ${dashboardSelect('distribution_grain', 'Group by', grain, [
+          { value: 'month', label: 'Month' },
+          { value: 'quarter', label: 'Quarter' }
+        ])}
+        ${dashboardSelect('distribution_period', 'Period', selected, periodSelectOptions(options))}
       </div>
       <div class="distribution-layout">
         <div class="donut-chart" style="--donut:${donut.background}">
@@ -2545,13 +3207,13 @@ function renderUpload() {
 function renderJiraUpload() {
   const latest = state.batches[0];
   return renderShell(`
-    ${pageHeader('Raw Jira Import', 'Import Jira issue exports directly from Venio or eTaxGo and calculate dashboard fields automatically.')}
+    ${pageHeader('Raw Jira Import', 'Import Jira issue exports directly from Venio and calculate dashboard fields automatically.')}
     <section class="grid-2">
       <div class="panel">
         <div class="upload-box">
           <div>
             <h2>Select Raw Jira CSV</h2>
-            <p class="subtle">Use this page for files like Jira_Venio_April.csv, Jira_Venio_May.csv, Jira_eTax_April.csv, and Jira_eTax_May.csv.</p>
+            <p class="subtle">Use this page for files like Jira_Venio_April.csv and Jira_Venio_May.csv.</p>
             <p><input type="file" accept=".csv,text/csv" data-action="jira-file" multiple></p>
             <button class="button primary" data-action="upload-jira-csv">Import Jira CSV Files</button>
           </div>
@@ -2711,6 +3373,26 @@ function projectDraftStage(project, index) {
   `;
 }
 
+function projectReviewValue(project, index, field, type = 'text') {
+  const value = project[field] ?? '';
+  const missing = project.missing_fields?.length ? project.missing_fields : projectMissingFields(project);
+  if (missing.includes(field)) {
+    if (field === 'package_type') return projectDraftPackage(project, index);
+    if (field === 'stage') return projectDraftStage(project, index);
+    return projectDraftInput(project, index, field, type);
+  }
+  return `<span class="project-review-value" title="${escapeHtml(value || '-')}">${escapeHtml(value || '-')}</span>`;
+}
+
+function projectReviewStatus(missing) {
+  if (!missing.length) return '<span class="project-ready-chip">Ready</span>';
+  return `
+    <div class="project-review-tags">
+      ${missing.map((field) => `<span class="project-review-chip">${escapeHtml(projectFieldLabel(field))}</span>`).join('')}
+    </div>
+  `;
+}
+
 function projectImportModal() {
   const review = state.projectTracking.importReview;
   if (!review) return '';
@@ -2760,17 +3442,17 @@ function projectImportModal() {
                   <tr>
                     <td class="project-row-index">${index + 1}</td>
                     <td>
-                      ${projectDraftInput(project, index, 'customer_name')}
-                      ${projectDraftInput(project, index, 'project_name')}
+                      ${projectReviewValue(project, index, 'customer_name')}
+                      ${projectReviewValue(project, index, 'project_name')}
                     </td>
-                    <td>${projectDraftPackage(project, index)}</td>
-                    <td>${projectDraftInput(project, index, 'user_count', 'number')}</td>
-                    <td>${projectDraftStage(project, index)}</td>
-                    <td>${projectDraftInput(project, index, 'kickoff_date', 'date')}</td>
-                    <td>${projectDraftInput(project, index, 'onboarding_date', 'date')}</td>
-                    <td>${projectDraftInput(project, index, 'training_date', 'date')}</td>
-                    <td>${projectDraftInput(project, index, 'golive_date', 'date')}</td>
-                    <td>${missing.length ? `<span class="project-review-chip">${missing.map(projectFieldLabel).join(', ')}</span>` : '<span class="project-ready-chip">Ready</span>'}</td>
+                    <td>${projectReviewValue(project, index, 'package_type')}</td>
+                    <td>${projectReviewValue(project, index, 'user_count', 'number')}</td>
+                    <td>${projectReviewValue(project, index, 'stage')}</td>
+                    <td>${projectReviewValue(project, index, 'kickoff_date', 'date')}</td>
+                    <td>${projectReviewValue(project, index, 'onboarding_date', 'date')}</td>
+                    <td>${projectReviewValue(project, index, 'training_date', 'date')}</td>
+                    <td>${projectReviewValue(project, index, 'golive_date', 'date')}</td>
+                    <td>${projectReviewStatus(missing)}</td>
                   </tr>
                 `;
               }).join('')}
@@ -2874,11 +3556,11 @@ function authModal() {
         <div class="modal-body auth-body">
           <label>
             <span>Username</span>
-            <input data-auth-field="username" autocomplete="username" placeholder="your name">
+            <input data-auth-field="username" autocomplete="username" placeholder="your name" value="${escapeHtml(state.auth.draft.username)}">
           </label>
           <label>
             <span>Password</span>
-            <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="simple password">
+            <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="simple password" value="${escapeHtml(state.auth.draft.password)}">
           </label>
           <button class="button primary" data-action="auth-submit" data-mode="${state.auth.modal}">
             ${isRegister ? 'Create Account' : 'Sign In'}
@@ -2984,18 +3666,16 @@ function modal() {
 
 function render() {
   document.body.classList.toggle('dark', state.settings.dark_mode === 'true');
-  document.body.classList.toggle('theme-etaxgo', state.view === 'etaxgo-issue');
   if (!state.auth.user) {
-    document.title = 'Sign in | Customer Service Team Hub';
-    document.body.classList.remove('theme-etaxgo');
-    app.innerHTML = renderAuthGate();
+    document.title = 'Customer Service Team Hub';
+    state.view = 'home';
+    app.innerHTML = renderLanding();
     return;
   }
   const titles = {
     home: 'Customer Service Team Hub',
     'project-dashboard': 'Project Dashboard | Customer Service Team Hub',
     'crisp-performance': 'Crisp Chat Performance | Customer Service Team Hub',
-    'etaxgo-issue': 'eTaxGo Issue | Customer Service Team Hub',
     upload: 'Venio Issue Upload | Customer Service Team Hub',
     'jira-upload': 'Raw Jira Import | Customer Service Team Hub',
     dashboard: 'Venio Issue Dashboard | Customer Service Team Hub',
@@ -3005,12 +3685,11 @@ function render() {
   };
   document.title = titles[state.view] ?? 'Customer Service Team Hub';
   const favicon = document.querySelector('#favicon');
-  if (favicon) favicon.href = state.view === 'etaxgo-issue' ? brandAssets.etaxgo : brandAssets.venio;
+  if (favicon) favicon.href = brandAssets.venio;
   const views = {
     home: renderLanding,
     'project-dashboard': renderProjectDashboard,
-    'crisp-performance': () => renderPlaceholder('Crisp Chat Performance', 'Not yet available.'),
-    'etaxgo-issue': () => renderPlaceholder('eTaxgo Issue', 'Not configured yet.'),
+    'crisp-performance': renderCrispPerformance,
     upload: renderUpload,
     'jira-upload': renderJiraUpload,
     dashboard: renderExecutiveDashboard,
@@ -3144,6 +3823,9 @@ function createDefaultStore(seed = {}) {
     batches,
     projectTrackingProjects,
     projectTrackingBatches,
+    crispOperators: seed.crispOperators ?? [],
+    crispBatches: seed.crispBatches ?? [],
+    crispMonths: seed.crispMonths ?? [],
     settings: {
       pending_warning_hours: '36',
       pending_critical_hours: '72',
@@ -3158,7 +3840,8 @@ function createDefaultStore(seed = {}) {
     nextNoteId: 1,
     nextRuleId: maxId(rules) + 1,
     nextProjectId: maxId(projectTrackingProjects) + 1,
-    nextProjectBatchId: maxId(projectTrackingBatches) + 1
+    nextProjectBatchId: maxId(projectTrackingBatches) + 1,
+    nextCrispBatchId: maxId(seed.crispBatches ?? []) + 1
   };
 }
 
@@ -3171,9 +3854,87 @@ function loadClientStore(seed = {}) {
   }
 }
 
+function readStoredClientStore() {
+  try {
+    return JSON.parse(localStorage.getItem(currentStorageKey()) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function hasWorkspaceContent(store) {
+  return Boolean(
+    store
+    && (
+      (store.issues ?? []).length
+      || (store.batches ?? []).length
+      || (store.projectTrackingProjects ?? []).length
+      || (store.projectTrackingBatches ?? []).length
+      || (store.crispMonths ?? []).length
+      || (store.crispOperators ?? []).length
+      || (store.crispBatches ?? []).length
+    )
+  );
+}
+
 function saveClientStore(store) {
   localStorage.setItem(currentStorageKey(), JSON.stringify(store));
   void saveRemoteStore(store);
+}
+
+function normalizeCrispMonthEntry(entry) {
+  if (!entry?.month) return null;
+  const operators = Array.isArray(entry.operators)
+    ? entry.operators.map((operator) => {
+      const firstResponseMedianSeconds = Number(operator.firstResponseMedianSeconds) || 0;
+      const resolutionMedianSeconds = Number(operator.resolutionMedianSeconds) || 0;
+      const firstResponseAverageSeconds = Number(operator.firstResponseAverageSeconds) || 0;
+      const resolutionAverageSeconds = Number(operator.resolutionAverageSeconds) || 0;
+      return {
+        ...operator,
+        firstResponseMedianText: formatDurationSeconds(firstResponseMedianSeconds),
+        resolutionMedianText: formatDurationSeconds(resolutionMedianSeconds),
+        firstResponseAverageText: formatDurationSeconds(firstResponseAverageSeconds),
+        resolutionAverageText: formatDurationSeconds(resolutionAverageSeconds)
+      };
+    })
+    : [];
+  const metrics = crispMetrics(operators);
+  return {
+    month: entry.month,
+    filename: entry.filename ?? '',
+    imported_at: entry.imported_at ?? new Date().toISOString(),
+    total_rows: Number(entry.total_rows ?? operators.length),
+    valid_rows: Number(entry.valid_rows ?? operators.length),
+    skipped_rows: Number(entry.skipped_rows ?? 0),
+    operators,
+    total_conversations: metrics.totalConversations,
+    avg_rating: metrics.avgRating,
+    avg_response_seconds: metrics.avgResponseSeconds,
+    avg_resolution_seconds: metrics.avgResolutionSeconds
+  };
+}
+
+function migrateCrispMonths(store) {
+  const months = (store.crispMonths ?? []).map(normalizeCrispMonthEntry).filter(Boolean);
+  if (!months.length && (store.crispOperators ?? []).length) {
+    const latestBatch = (store.crispBatches ?? [])[0];
+    const importedAt = latestBatch?.imported_at ?? new Date().toISOString();
+    const month = latestBatch?.month ?? String(importedAt).slice(0, 7);
+    months.push(normalizeCrispMonthEntry({
+      month,
+      filename: latestBatch?.filename ?? 'Legacy Crisp import',
+      imported_at: importedAt,
+      total_rows: latestBatch?.total_rows ?? store.crispOperators.length,
+      valid_rows: latestBatch?.valid_rows ?? store.crispOperators.length,
+      skipped_rows: latestBatch?.skipped_rows ?? 0,
+      operators: store.crispOperators
+    }));
+  }
+  store.crispMonths = months.sort((a, b) => b.month.localeCompare(a.month));
+  const activeMonth = store.crispMonths[0];
+  store.crispOperators = activeMonth?.operators ?? [];
+  return store.crispMonths;
 }
 
 function clientBootstrap(store = loadClientStore()) {
@@ -3187,12 +3948,19 @@ function clientBootstrap(store = loadClientStore()) {
       category_confidence: null,
       category_rule: null
     });
+  store.projectTrackingProjects = (store.projectTrackingProjects ?? [])
+    .map(normalizeProjectImportRecord)
+    .filter(Boolean);
+  migrateCrispMonths(store);
   saveClientStore(store);
   return {
     issues: store.issues ?? [],
     batches: store.batches ?? [],
     projectTrackingProjects: store.projectTrackingProjects ?? [],
     projectTrackingBatches: store.projectTrackingBatches ?? [],
+    crispOperators: store.crispOperators ?? [],
+    crispBatches: store.crispBatches ?? [],
+    crispMonths: store.crispMonths ?? [],
     settings: store.settings ?? {},
     rules: store.rules ?? []
   };
@@ -3380,6 +4148,139 @@ function importClientCsv(filename, content, format = 'normalized') {
   };
 }
 
+function crispSeconds(rawValue, displayValue) {
+  const raw = Number(String(rawValue ?? '').replace(/,/g, '').trim());
+  if (Number.isFinite(raw)) return raw;
+  const text = norm(displayValue).toLowerCase();
+  if (!text) return 0;
+  let total = 0;
+  const hour = text.match(/(\d+(?:\.\d+)?)\s*(?:h|ช)/);
+  const minute = text.match(/(\d+(?:\.\d+)?)\s*(?:m|น)/);
+  const second = text.match(/(\d+(?:\.\d+)?)\s*(?:s|ว)/);
+  if (hour) total += Number(hour[1]) * 3600;
+  if (minute) total += Number(minute[1]) * 60;
+  if (second) total += Number(second[1]);
+  return Number.isFinite(total) ? total : 0;
+}
+
+function crispInteger(value) {
+  const parsed = Number(String(value ?? '').replace(/,/g, '').trim());
+  return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : 0;
+}
+
+function crispHeaderKey(value) {
+  return norm(value).replace(/^\uFEFF/, '').toLowerCase().replace(/\s+/g, '');
+}
+
+function crispRowValue(row, field) {
+  const aliases = crispColumnAliases[field] ?? [field];
+  for (const alias of aliases) {
+    if (Object.prototype.hasOwnProperty.call(row, alias)) return row[alias];
+  }
+  const entries = Object.entries(row);
+  const aliasKeys = aliases.map(crispHeaderKey);
+  return entries.find(([header]) => aliasKeys.includes(crispHeaderKey(header)))?.[1];
+}
+
+function hasCrispColumn(headers, field) {
+  const headerKeys = headers.map(crispHeaderKey);
+  return (crispColumnAliases[field] ?? [field]).some((alias) => headerKeys.includes(crispHeaderKey(alias)));
+}
+
+function crispOperatorFromRow(row) {
+  const operator = emptyToNull(crispRowValue(row, 'operator'));
+  if (!operator) return null;
+  const conversations = crispInteger(crispRowValue(row, 'conversations'));
+  const firstResponseMedianSeconds = crispSeconds(crispRowValue(row, 'firstResponseMedianSeconds'), crispRowValue(row, 'firstResponseMedian'));
+  const resolutionMedianSeconds = crispSeconds(crispRowValue(row, 'resolutionMedianSeconds'), crispRowValue(row, 'resolutionMedian'));
+  const firstResponseAverageSeconds = crispSeconds(crispRowValue(row, 'firstResponseAverageSeconds'), crispRowValue(row, 'firstResponseAverage'));
+  const resolutionAverageSeconds = crispSeconds(crispRowValue(row, 'resolutionAverageSeconds'), crispRowValue(row, 'resolutionAverage'));
+  return {
+    id: emptyToNull(crispRowValue(row, 'operatorId')) ?? slug(operator),
+    operator,
+    avatar: emptyToNull(crispRowValue(row, 'avatar')),
+    conversations,
+    rating: numberOrNull(crispRowValue(row, 'rating')) ?? 0,
+    firstResponseMedianText: formatDurationSeconds(firstResponseMedianSeconds),
+    firstResponseMedianSeconds,
+    resolutionMedianText: formatDurationSeconds(resolutionMedianSeconds),
+    resolutionMedianSeconds,
+    firstResponseAverageText: formatDurationSeconds(firstResponseAverageSeconds),
+    firstResponseAverageSeconds,
+    resolutionAverageText: formatDurationSeconds(resolutionAverageSeconds),
+    resolutionAverageSeconds
+  };
+}
+
+function importClientCrispCsv(filename, content, month = currentMonthKey()) {
+  const importMonth = norm(month);
+  if (!/^\d{4}-\d{2}$/.test(importMonth)) throw new Error('Choose a valid import month.');
+  const store = loadClientStore();
+  const { headers, records } = parseCsvText(content);
+  const missingColumns = crispRequiredColumns
+    .filter((column) => !hasCrispColumn(headers, column))
+    .map((column) => crispColumnLabels[column] ?? column);
+  if (missingColumns.length) {
+    const error = new Error(`Missing columns: ${missingColumns.join(', ')}`);
+    error.status = 400;
+    throw error;
+  }
+
+  const operators = [];
+  let skippedRows = 0;
+  for (const record of records) {
+    const operator = crispOperatorFromRow(record);
+    if (!operator) {
+      skippedRows += 1;
+      continue;
+    }
+    operators.push(operator);
+  }
+
+  const now = new Date().toISOString();
+  const metrics = crispMetrics(operators);
+  const batch = {
+    id: store.nextCrispBatchId++,
+    month: importMonth,
+    filename,
+    imported_at: now,
+    total_rows: records.length,
+    valid_rows: operators.length,
+    skipped_rows: skippedRows,
+    total_conversations: metrics.totalConversations,
+    avg_rating: metrics.avgRating,
+    avg_response_seconds: metrics.avgResponseSeconds,
+    avg_resolution_seconds: metrics.avgResolutionSeconds
+  };
+
+  const monthEntry = normalizeCrispMonthEntry({
+    month: importMonth,
+    filename,
+    imported_at: now,
+    total_rows: records.length,
+    valid_rows: operators.length,
+    skipped_rows: skippedRows,
+    operators
+  });
+  store.crispMonths = [
+    monthEntry,
+    ...(store.crispMonths ?? []).filter((entry) => entry.month !== importMonth)
+  ].filter(Boolean).sort((a, b) => b.month.localeCompare(a.month));
+  store.crispOperators = operators;
+  store.crispBatches = [batch, ...(store.crispBatches ?? [])];
+  saveClientStore(store);
+
+  return {
+    ok: true,
+    batchId: batch.id,
+    totalRows: records.length,
+    validRows: operators.length,
+    skippedRows,
+    importedAt: now,
+    ...clientBootstrap(store)
+  };
+}
+
 async function clientApi(path, options = {}) {
   const method = options.method ?? 'GET';
   const body = options.body ? JSON.parse(options.body) : {};
@@ -3463,11 +4364,16 @@ async function clientApi(path, options = {}) {
     const validProjects = [];
     let skippedRows = Number(body.skippedRows ?? 0);
     for (const project of incomingProjects) {
+      const mappedStage = normalizeProjectSalesStageStatus(project.source_status);
       if (!projectNameKey(project.project_name)) {
         skippedRows += 1;
         continue;
       }
-      validProjects.push(project);
+      if (!mappedStage) {
+        skippedRows += 1;
+        continue;
+      }
+      validProjects.push({ ...project, stage: mappedStage });
     }
 
     const seenImportKeys = new Set();
@@ -3624,19 +4530,24 @@ async function api(path, options = {}) {
 }
 
 async function loadUserWorkspace() {
-  let store = null;
+  const localStore = readStoredClientStore();
+  let remoteStore = null;
   try {
     const response = await fetch('/api/user-store', {
       headers: { Authorization: `Bearer ${state.auth.token}` }
     });
     if (response.ok) {
       const payload = await response.json();
-      store = payload.data;
+      remoteStore = payload.data;
     }
   } catch {
-    store = null;
+    remoteStore = null;
   }
-  if (!store) store = createDefaultStore();
+
+  const store = hasWorkspaceContent(remoteStore)
+    ? remoteStore
+    : localStore || remoteStore || createDefaultStore();
+
   localStorage.setItem(currentStorageKey(), JSON.stringify(store));
   if (state.auth.token) void saveRemoteStore(store);
   return clientBootstrap(store);
@@ -3661,6 +4572,12 @@ function applyBootstrap(payload) {
   state.batches = payload.batches ?? [];
   state.projectTrackingProjects = payload.projectTrackingProjects ?? [];
   state.projectTrackingBatches = payload.projectTrackingBatches ?? [];
+  state.crisp.operators = payload.crispOperators ?? [];
+  state.crisp.batches = payload.crispBatches ?? [];
+  state.crisp.months = payload.crispMonths ?? [];
+  if (!state.crisp.selectedMonth && state.crisp.months.length) {
+    state.crisp.selectedMonth = state.crisp.months[0].month;
+  }
   state.settings = payload.settings ?? {};
   state.rules = payload.rules ?? [];
 }
@@ -3884,7 +4801,7 @@ app.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'toggle-password') {
-      const input = app.querySelector('[data-auth-field="password"]');
+      const input = actionElement.closest('.auth-password-wrap')?.querySelector('[data-auth-field="password"]');
       if (input) {
         const isHidden = input.type === 'password';
         input.type = isHidden ? 'text' : 'password';
@@ -3913,6 +4830,11 @@ app.addEventListener('click', async (event) => {
       render();
       return;
     }
+    if (action === 'reset-project-filters') {
+      state.projectTracking.filters = { ...defaultProjectTrackingFilters };
+      render();
+      return;
+    }
     if (action === 'print-report') {
       printReport();
       return;
@@ -3931,6 +4853,10 @@ app.addEventListener('click', async (event) => {
     }
     if (action === 'upload-project-xlsx') {
       uploadProjectWorkbook();
+      return;
+    }
+    if (action === 'upload-crisp-csv') {
+      uploadCrispCsv();
       return;
     }
     if (action === 'add-project') {
@@ -4044,6 +4970,12 @@ app.addEventListener('click', async (event) => {
 
   const view = closestFromEvent(event, '[data-view]')?.dataset.view;
   if (view) {
+    if (!state.auth.user && view !== 'home') {
+      state.auth.modal = 'signin';
+      toast('Please sign in before opening a workspace.');
+      render();
+      return;
+    }
     state.view = view;
     state.selectedProjectId = null;
     state.openFilter = '';
@@ -4090,6 +5022,13 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
+  const crispView = closestFromEvent(event, '[data-crisp-view]')?.dataset.crispView;
+  if (crispView) {
+    state.crisp.activeView = crispView;
+    render();
+    return;
+  }
+
   const deleteProjectId = closestFromEvent(event, '[data-delete-project]')?.dataset.deleteProject;
   if (deleteProjectId) {
     deleteProject(Number(deleteProjectId));
@@ -4108,6 +5047,12 @@ app.addEventListener('click', async (event) => {
 });
 
 app.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && targetElementFromEvent(event)?.matches('[data-auth-field]')) {
+    const authMode = targetElementFromEvent(event).dataset.authMode || state.auth.modal || 'signin';
+    event.preventDefault();
+    authSubmit(authMode);
+    return;
+  }
   if (!['Enter', ' '].includes(event.key)) return;
   const projectId = closestFromEvent(event, '[data-open-project]')?.dataset.openProject;
   if (!projectId) return;
@@ -4118,8 +5063,31 @@ app.addEventListener('keydown', (event) => {
 
 app.addEventListener('input', (event) => {
   const target = event.target;
+  if (target.matches('[data-auth-field]')) {
+    const field = target.dataset.authField;
+    const mode = target.dataset.authMode;
+    if (mode) {
+      state.auth.draft[`${mode}${field[0].toUpperCase()}${field.slice(1)}`] = target.value;
+    } else {
+      state.auth.draft[field] = target.value;
+    }
+    return;
+  }
   if (target.matches('[data-project-draft-field]')) {
     updateProjectImportDraft(target);
+    return;
+  }
+  if (target.matches('[data-project-filter]')) {
+    state.projectTracking.filters = {
+      ...defaultProjectTrackingFilters,
+      ...(state.projectTracking.filters ?? {}),
+      [target.dataset.projectFilter]: target.value
+    };
+    render();
+    return;
+  }
+  if (target.matches('[data-crisp-import-month]')) {
+    state.crisp.selectedMonth = target.value;
     return;
   }
   if (target.matches('[data-filter]')) {
@@ -4157,6 +5125,25 @@ app.addEventListener('change', (event) => {
     }
     state.activePreset = '';
     render();
+    return;
+  }
+  if (target.matches('[data-project-filter-one]')) {
+    state.projectTracking.filters = {
+      ...defaultProjectTrackingFilters,
+      ...(state.projectTracking.filters ?? {}),
+      [target.dataset.projectFilterOne]: target.value
+    };
+    render();
+    return;
+  }
+  if (target.matches('[data-crisp-selected-month]')) {
+    state.crisp.selectedMonth = target.value;
+    render();
+    return;
+  }
+  if (target.matches('[data-crisp-import-month]')) {
+    state.crisp.selectedMonth = target.value;
+    return;
   }
   if (target.matches('[data-comparison]')) {
     state.comparison[target.dataset.comparison] = target.value;
@@ -4229,16 +5216,37 @@ async function uploadProjectWorkbook() {
       method: 'POST',
       body: JSON.stringify({ filename: file.name, content })
     });
-    if (!(payload.projects ?? []).length) {
-      toast(`No matching Venio implementation projects found. Skipped ${payload.skippedRows ?? 0} rows.`);
+    const review = normalizeProjectImportReview(payload);
+    if (!(review.projects ?? []).length) {
+      toast(`No matching Venio implementation projects found. Skipped ${review.skippedRows ?? 0} rows.`);
       render();
       return;
     }
-    state.projectTracking.importReview = payload;
-    toast(`${payload.validRows ?? 0} matching projects found. Review missing fields before import.`);
+    state.projectTracking.importReview = review;
+    toast(`${review.validRows ?? 0} matching projects found. Review missing fields before import.`);
     render();
   } catch (error) {
     toast(`Project import failed: ${error.message}`);
+    render();
+  }
+}
+
+async function uploadCrispCsv() {
+  const input = app.querySelector('[data-action="crisp-csv-file"]');
+  const month = app.querySelector('[data-crisp-import-month]')?.value || state.crisp.selectedMonth || currentMonthKey();
+  const file = input?.files?.[0];
+  if (!file) return toast('Select a Crisp operator CSV first.');
+  try {
+    const content = await file.text();
+    const payload = importClientCrispCsv(file.name, content, month);
+    applyBootstrap(payload);
+    state.view = 'crisp-performance';
+    state.crisp.activeView = 'performance';
+    state.crisp.selectedMonth = month;
+    toast(`Imported ${payload.validRows ?? 0} Crisp operators for ${periodLabel(month)}. Skipped ${payload.skippedRows ?? 0}.`);
+    render();
+  } catch (error) {
+    toast(`Crisp import failed: ${error.message}`);
     render();
   }
 }
@@ -4260,8 +5268,9 @@ function updateProjectImportDraft(target) {
 }
 
 async function confirmProjectImport() {
-  const review = state.projectTracking.importReview;
+  const review = normalizeProjectImportReview(state.projectTracking.importReview);
   if (!review) return;
+  state.projectTracking.importReview = review;
   app.querySelectorAll('[data-project-draft-field]').forEach(updateProjectImportDraft);
   try {
     const payload = await api('/api/project-tracking/import', {
@@ -4343,20 +5352,28 @@ async function saveProjectField(input) {
 }
 
 async function authSubmit(mode = 'signin') {
-  const username = app.querySelector('[data-auth-field="username"]')?.value;
-  const password = app.querySelector('[data-auth-field="password"]')?.value;
+  const authMode = mode === 'register' ? 'register' : 'signin';
+  const form = app.querySelector(`[data-auth-form="${authMode}"]`);
+  const username = form?.querySelector('[data-auth-field="username"]')?.value
+    ?? app.querySelector('[data-auth-field="username"]')?.value;
+  const password = form?.querySelector('[data-auth-field="password"]')?.value
+    ?? app.querySelector('[data-auth-field="password"]')?.value;
   try {
-    const payload = await api(`/api/auth/${mode === 'register' ? 'register' : 'login'}`, {
+    const payload = await api(`/api/auth/${authMode === 'register' ? 'register' : 'login'}`, {
       method: 'POST',
       body: JSON.stringify({ username, password })
     });
     state.auth.token = payload.token;
     state.auth.user = payload.user;
     state.auth.modal = '';
+    state.auth.draft = {
+      username: '',
+      password: ''
+    };
     localStorage.setItem(AUTH_TOKEN_KEY, payload.token);
     localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
     applyBootstrap(await loadUserWorkspace());
-    toast(`${mode === 'register' ? 'Registered' : 'Signed in'} as ${payload.user.username}.`);
+    toast(`${authMode === 'register' ? 'Registered' : 'Signed in'} as ${payload.user.username}.`);
     render();
   } catch (error) {
     toast(error.message || 'Sign in failed.');

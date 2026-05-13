@@ -19,6 +19,14 @@ const EDITABLE_FIELDS = new Set([
 const STAGES = ['Kick-off', 'Onboarding', 'Training', 'GoLive', 'Warranty', 'On Hold'];
 const PIPELINE_STAGES = ['Kick-off', 'Onboarding', 'Training', 'GoLive'];
 const REQUIRED_REVIEW_FIELDS = ['customer_name', 'project_name', 'package_type', 'user_count', 'stage'];
+const SALES_STAGE_MAPPINGS = [
+  { pattern: /\bplanning\b/, stage: 'Kick-off' },
+  { pattern: /\bimplementation\b|\bimplement\b/, stage: 'Onboarding' },
+  { pattern: /\btraining\b/, stage: 'Training' },
+  { pattern: /\bin\s*progress\b|\binprogress\b/, stage: 'GoLive' },
+  { pattern: /\bwarranty\b/, stage: 'GoLive' },
+  { pattern: /\bhold\s*projects?\b|\bon\s*hold\b/, stage: 'On Hold' }
+];
 const ACTIVE_STATUS_PATTERNS = [
   'planning',
   'implement',
@@ -202,8 +210,16 @@ function extractDate(text, keywords, fallbackYear) {
   return null;
 }
 
+function normalizeSalesStageStatus(value) {
+  const text = String(value ?? '').replace(/^\s*\d+\.\s*/, '').trim().toLowerCase();
+  if (!text) return null;
+  return SALES_STAGE_MAPPINGS.find(({ pattern }) => pattern.test(text))?.stage ?? null;
+}
+
 function normalizeStage(value, context = {}) {
   const text = String(value ?? '').replace(/^\s*\d+\.\s*/, '').trim().toLowerCase();
+  const salesStage = normalizeSalesStageStatus(value);
+  if (salesStage) return salesStage;
   const notes = String(context.notes ?? '').toLowerCase();
   if (context.goLiveDate) return 'GoLive';
   if (!text) return null;
@@ -220,10 +236,7 @@ function normalizeStage(value, context = {}) {
 }
 
 function isActivePipelineStatus(value) {
-  const text = String(value ?? '').replace(/^\s*\d+\.\s*/, '').trim().toLowerCase();
-  if (!text) return false;
-  return ACTIVE_STATUS_PATTERNS.some((pattern) => text.includes(pattern))
-    || STAGES.some((stage) => stage.toLowerCase() === text);
+  return Boolean(normalizeSalesStageStatus(value));
 }
 
 function isVenioProject(record) {
@@ -330,10 +343,14 @@ function recordToProject(record) {
 }
 
 function sanitizeProjectDraft(project) {
+  const sourceStatus = clean(project.source_status);
+  if (!isActivePipelineStatus(sourceStatus)) return null;
   const normalizedProjectName = projectNameKey(project.project_name || project.customer_name);
   if (!normalizedProjectName) return null;
   const sourceKey = `project:${normalizedProjectName}`;
-  const stage = STAGES.includes(project.stage) ? project.stage : normalizeStage(project.stage) ?? 'Kick-off';
+  const stage = normalizeSalesStageStatus(sourceStatus)
+    ?? (STAGES.includes(project.stage) ? project.stage : normalizeStage(project.stage))
+    ?? 'Kick-off';
   const fallbackYear = Number(clean(project.kickoff_date)?.slice(0, 4)) || new Date().getFullYear();
   return {
     source_key: sourceKey,
@@ -341,7 +358,7 @@ function sanitizeProjectDraft(project) {
     project_name: clean(project.project_name) ?? clean(project.customer_name),
     package_type: normalizePackage(project.package_type, project.project_name) ?? clean(project.package_type),
     user_count: toInteger(project.user_count),
-    source_status: clean(project.source_status) ?? 'Imported review',
+    source_status: sourceStatus,
     stage,
     kickoff_date: normalizeDate(project.kickoff_date, fallbackYear),
     onboarding_date: normalizeDate(project.onboarding_date, fallbackYear),
@@ -380,6 +397,7 @@ function mergeProject(existing, incoming, batchId, now) {
   const editedFields = new Set(JSON.parse(existing?.edited_fields || '[]'));
   const merged = { ...incoming };
   for (const field of EDITABLE_FIELDS) {
+    if (field === 'stage') continue;
     if (editedFields.has(field)) merged[field] = existing[field];
   }
   return {
