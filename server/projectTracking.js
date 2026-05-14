@@ -398,7 +398,12 @@ function mergeProject(existing, incoming, batchId, now) {
   const merged = { ...incoming };
   for (const field of EDITABLE_FIELDS) {
     if (field === 'stage') continue;
-    if (editedFields.has(field)) merged[field] = existing[field];
+    const incomingValue = incoming[field];
+    if ((incomingValue === null || incomingValue === undefined || incomingValue === '') && existing?.[field]) {
+      merged[field] = existing[field];
+    } else {
+      editedFields.delete(field);
+    }
   }
   return {
     ...merged,

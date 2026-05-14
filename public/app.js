@@ -158,7 +158,7 @@ const labels = {
 };
 
 const brandAssets = {
-  venio: './assets/venio-full.png'
+  venio: './assets/venio-icon.svg'
 };
 
 const requiredColumns = [
@@ -797,25 +797,11 @@ function priorityPill(value) {
 }
 
 function card(label, value, hint) {
-  const labelText = norm(label).toLowerCase();
-  const iconKey = labelText.includes('open') || labelText.includes('pending')
-    ? 'open'
-    : labelText.includes('resolved')
-      ? 'resolved'
-      : labelText.includes('priority') || labelText.includes('critical')
-        ? 'priority'
-        : labelText.includes('time') || labelText.includes('age') || labelText.includes('oldest')
-          ? 'time'
-          : labelText.includes('customer')
-            ? 'customer'
-            : labelText.includes('category')
-              ? 'category'
-              : 'total';
   return `
     <div class="card">
-      <div class="card-label"><span>${escapeHtml(label)}</span><span class="card-icon" aria-hidden="true">${icon(iconKey)}</span></div>
+      <div class="card-label"><span>${escapeHtml(label)}</span></div>
       <div class="metric">${escapeHtml(value)}</div>
-      <div class="subtle">${escapeHtml(hint ?? '')}</div>
+      ${hint ? `<div class="subtle">${escapeHtml(hint)}</div>` : ''}
     </div>
   `;
 }
@@ -1427,22 +1413,6 @@ function countProjectsByPackage(projects) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]);
 }
 
-function projectModeLabel() {
-  return state.projectTracking.viewMode === 'twice-weekly'
-    ? 'Twice-a-week operational review'
-    : 'Monthly management view';
-}
-
-function projectModeWindowText() {
-  const today = new Date();
-  if (state.projectTracking.viewMode === 'twice-weekly') {
-    const end = new Date(today);
-    end.setDate(end.getDate() + 3);
-    return `${displayDate(today)} to ${displayDate(end)}`;
-  }
-  return today.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-}
-
 function projectStageProgress(project) {
   const grouped = projectStageGroup(project);
   const activeIndex = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(grouped);
@@ -1471,7 +1441,7 @@ function projectPieChart(projects) {
     <div class="panel project-pie-panel">
       <div class="panel-title">
         <h2>Project Stage Distribution</h2>
-        <span>${escapeHtml(projectModeLabel())}</span>
+        <span>${projects.length} projects</span>
       </div>
       <div class="project-pie-layout">
         <div class="project-pie" style="background: conic-gradient(${gradient || '#e4ebf4 0deg 360deg'});" title="${projects.length} total projects">
@@ -1562,41 +1532,6 @@ function projectDateControl(project, stage, field) {
   `;
 }
 
-function projectAttentionRows(projects) {
-  const missingCurrentDates = projects.filter((project) => projectMissingFields(project).some((field) => field.endsWith('_date'))).length;
-  const onHold = projects.filter((project) => projectStageGroup(project) === 'On Hold').length;
-  const longRunning = projects
-    .filter((project) => !['GoLive', 'On Hold'].includes(projectStageGroup(project)))
-    .sort((a, b) => projectDurationDays(b) - projectDurationDays(a))
-    .slice(0, 3);
-  return `
-    <div class="panel project-attention-panel">
-      <div class="panel-title">
-        <h2>Timeline Attention</h2>
-        <span>Data quality and delivery focus</span>
-      </div>
-      <div class="project-attention-grid">
-        <div class="insight-line ${missingCurrentDates ? 'watch' : 'ok'}">
-          <div><span>Missing milestone data</span><strong>${missingCurrentDates}</strong></div>
-          <p>Rows with blank dates for a stage already reached.</p>
-        </div>
-        <div class="insight-line ${onHold ? 'danger' : 'ok'}">
-          <div><span>On hold</span><strong>${onHold}</strong></div>
-          <p>Excluded from active implementation throughput.</p>
-        </div>
-        <div class="project-longrun-list">
-          ${longRunning.map((project) => `
-            <div>
-              <strong>${escapeHtml(project.customer_name || project.project_name || '-')}</strong>
-              <span>${projectDurationDays(project)} days / ${escapeHtml(projectStageGroup(project))}</span>
-            </div>
-          `).join('') || '<p class="subtle">No long-running active projects.</p>'}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
 function projectBoardColumns(projects) {
   const columns = ['Kick-off', 'Onboarding', 'Training', 'GoLive', 'On Hold'];
   return columns.map((stage) => ({
@@ -1633,8 +1568,6 @@ function projectStageDisplay(project) {
 
 function projectBoardCard(project) {
   const missing = projectMissingFields(project);
-  const progress = projectProgressValue(project);
-  const totalDays = projectDurationDays(project);
   return `
     <article class="project-board-card stage-${slug(projectStageGroup(project))}" data-open-project="${project.id}" role="button" tabindex="0" aria-label="Edit ${escapeHtml(project.customer_name || project.project_name || 'project')}">
       <div class="project-board-card-head">
@@ -1651,13 +1584,6 @@ function projectBoardCard(project) {
         </div>
         ${projectStageDisplay(project)}
       </div>
-      <div class="project-card-progress">
-        <div>
-          <span>Total Days</span>
-          <strong>${totalDays}d</strong>
-        </div>
-        <i style="width:${projectStageGroup(project) === 'On Hold' ? 100 : progress}%"></i>
-      </div>
       <div class="project-card-dates">
         ${projectCardDate(project, 'Kick-off', 'kickoff_date')}
         ${projectCardDate(project, 'Onboarding', 'onboarding_date')}
@@ -1673,7 +1599,8 @@ function projectViewTabs() {
   const tabs = [
     ['board', 'Board', 'board'],
     ['timeline', 'Timeline', 'time'],
-    ['calendar', 'Calendar', 'calendar']
+    ['calendar', 'Calendar', 'calendar'],
+    ['import', 'Import', 'upload']
   ];
   return `
     <div class="project-board-tabs" aria-label="Project views">
@@ -1791,35 +1718,58 @@ function projectKanbanBoard(projects) {
 
 function projectTimelineView(projects) {
   const rows = [...projects].sort((a, b) => compareDates(a.kickoff_date, b.kickoff_date) || compareText(a.customer_name, b.customer_name));
+  const processStages = ['Kick-off', 'Onboarding', 'Training', 'GoLive'];
   return `
     <section class="project-board-shell">
       ${projectViewTabs()}
-      <div class="panel project-timeline-panel">
-        ${rows.map((project) => `
-          <article class="project-timeline-card stage-${slug(projectStageGroup(project))}">
-            <div class="project-timeline-card-head">
-              <div>
-                <strong>${escapeHtml(project.customer_name || project.project_name || '-')}</strong>
-                <span>${escapeHtml(project.project_name || '-')}</span>
-              </div>
-              ${projectStageBadge(project)}
-            </div>
-            <div class="project-timeline-line">
-              ${projectDateFields(project).map(({ stage, field }) => {
-                const filled = Boolean(project[field]);
+      <section class="panel project-process-panel">
+        <div class="panel-title">
+          <div>
+            <h2>Project Processes</h2>
+            <span>Onboarding journey by customer</span>
+          </div>
+          <span>${rows.length} records</span>
+        </div>
+        <div class="table-wrap project-process-wrap">
+          <table class="project-process-table">
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Package</th>
+                <th>Users</th>
+                <th>Stage</th>
+                <th>Onboarding Journey</th>
+                <th>Kick-off</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((project) => {
+                const grouped = projectStageGroup(project);
+                const activeIndex = processStages.indexOf(grouped);
                 return `
-                  <label class="${filled ? 'filled' : ''}">
-                    <i></i>
-                    <span>${escapeHtml(stage)}</span>
-                    <strong>${project[field] ? escapeHtml(displayDate(project[field])) : '-'}</strong>
-                    <input type="date" value="${escapeHtml(project[field] ?? '')}" data-project-id="${project.id}" data-project-field="${field}" aria-label="${escapeHtml(stage)} date">
-                  </label>
+                  <tr class="stage-${slug(grouped)}" data-open-project="${project.id}" tabindex="0" aria-label="Edit ${escapeHtml(project.customer_name || project.project_name || 'project')}">
+                    <td>
+                      <strong>${escapeHtml(project.customer_name || project.project_name || '-')}</strong>
+                      <small>${escapeHtml(project.project_name || '-')}</small>
+                    </td>
+                    <td>${projectPackageDisplay(project)}</td>
+                    <td><strong>${number(project.user_count)}</strong></td>
+                    <td>${projectStageBadge(project)}</td>
+                    <td>
+                      <div class="project-process-steps">
+                        ${processStages.map((stage, index) => `
+                          <span class="${grouped === 'On Hold' ? 'paused' : index < activeIndex ? 'done' : index === activeIndex ? 'current' : 'waiting'}">${escapeHtml(stage)}</span>
+                        `).join('')}
+                      </div>
+                    </td>
+                    <td>${project.kickoff_date ? escapeHtml(displayDate(project.kickoff_date)) : '-'}</td>
+                  </tr>
                 `;
-              }).join('')}
-            </div>
-          </article>
-        `).join('')}
-      </div>
+              }).join('') || '<tr><td colspan="6">No project data yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </section>
   `;
 }
@@ -1846,7 +1796,7 @@ function projectCalendarView(projects) {
           <section class="panel project-calendar-month">
             <div class="panel-title">
               <h2>${escapeHtml(periodLabel(month))}</h2>
-              <span>${events.filter((event) => event.month === month).length} milestones</span>
+              <span>${events.filter((event) => event.month === month).length} processes</span>
             </div>
             <div class="project-calendar-list">
               ${events.filter((event) => event.month === month).map((event) => `
@@ -1863,8 +1813,8 @@ function projectCalendarView(projects) {
           </section>
         `).join('') || `
           <section class="panel project-empty-board">
-            <h2>No dated milestones</h2>
-            <p class="subtle">Add milestone dates from Board or Timeline view.</p>
+            <h2>No dated processes</h2>
+            <p class="subtle">Add process dates from Board or Timeline view.</p>
           </section>
         `}
       </div>
@@ -1872,20 +1822,28 @@ function projectCalendarView(projects) {
   `;
 }
 
-function projectActiveView(projects) {
+function projectActiveView(projects, latest) {
   const renderers = {
     board: projectKanbanBoard,
     timeline: projectTimelineView,
     calendar: projectCalendarView
   };
+  if (state.projectTracking.activeView === 'import') {
+    return `
+      <section class="project-board-shell">
+        ${projectViewTabs()}
+        ${projectImportPanel(latest)}
+      </section>
+    `;
+  }
   if (!renderers[state.projectTracking.activeView]) state.projectTracking.activeView = 'board';
   const filteredProjects = filteredProjectTrackingProjects(projects);
   return `
     ${projectBoardFilters(projects, filteredProjects)}
     ${filteredProjects.length ? renderers[state.projectTracking.activeView](filteredProjects) : `
       <section class="panel project-empty-board">
-        <h2>No projects match these filters</h2>
-        <p class="subtle">Adjust package, stage, review status, or search keywords.</p>
+        <h2>${projects.length ? 'No projects match these filters' : 'No project data yet'}</h2>
+        <p class="subtle">${projects.length ? 'Adjust package, stage, review status, or search keywords.' : 'Open the Import tab to upload the Excel workbook.'}</p>
       </section>
     `}
   `;
@@ -1919,7 +1877,7 @@ function projectTextarea(project, field) {
 function projectTimeline(project) {
   const grouped = projectStageGroup(project);
   const activeIndex = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(grouped);
-  const milestones = [
+  const processes = [
     ['Kick-off', 'kickoff_date'],
     ['Onboarding', 'onboarding_date'],
     ['Training', 'training_date'],
@@ -1931,7 +1889,7 @@ function projectTimeline(project) {
       <div class="project-timeline-row on-hold">
         <div class="project-hold-banner">On Hold outside active pipeline</div>
         <div class="project-timeline">
-          ${milestones.map(([stage, field]) => projectTimelineStep(project, stage, field, false, false)).join('')}
+          ${processes.map(([stage, field]) => projectTimelineStep(project, stage, field, false, false)).join('')}
         </div>
       </div>
     `;
@@ -1940,7 +1898,7 @@ function projectTimeline(project) {
   return `
     <div class="project-timeline-row">
       <div class="project-timeline">
-        ${milestones.map(([stage, field], index) => projectTimelineStep(project, stage, field, index <= activeIndex, index === activeIndex)).join('')}
+        ${processes.map(([stage, field], index) => projectTimelineStep(project, stage, field, index <= activeIndex, index === activeIndex)).join('')}
       </div>
     </div>
   `;
@@ -1966,54 +1924,20 @@ function renderProjectDashboard() {
 
   return renderShell(`
     ${projectPageHeader('Project Tracking Dashboard', 'Implementation pipeline, timeline health, and executive project status.')}
-    <section class="panel project-import-panel">
-      <div>
-        <div class="section-label">Excel Import</div>
-        <h2>Implementation Project Data</h2>
-        <p class="subtle">Upload the deal summary Excel file. Sales values, payment fields, and priority colors are ignored.</p>
-      </div>
-      <div class="project-import-actions">
-        <input type="file" accept=".xlsx" data-action="project-xlsx-file">
-        <button class="button primary" data-action="upload-project-xlsx">${icon('upload')} Import Excel</button>
-        <button class="button" data-action="add-project">Add Project</button>
-      </div>
-      <div class="project-import-meta">
-        ${latest ? `Latest: <strong>${escapeHtml(middleEllipsis(latest.filename, 34))}</strong> / ${latest.valid_rows} projects / ${displayDate(latest.imported_at)}` : 'No project workbook imported yet.'}
-      </div>
-    </section>
-
-    <section class="project-dashboard-toolbar">
-      <div>
-        <div class="section-label">${escapeHtml(projectModeLabel())}</div>
-        <strong>${escapeHtml(projectModeWindowText())}</strong>
-      </div>
-      <div class="segmented-control" aria-label="Project dashboard display mode">
-        <button class="${state.projectTracking.viewMode === 'monthly' ? 'active' : ''}" data-project-mode="monthly">Monthly</button>
-        <button class="${state.projectTracking.viewMode === 'twice-weekly' ? 'active' : ''}" data-project-mode="twice-weekly">Twice-weekly</button>
-      </div>
-    </section>
-
     <section class="cards project-kpis">
-      ${card('Total Projects', m.total, 'Active implementation records')}
-      ${card('Total Users', m.users, 'Imported user count total')}
-      ${card('Pipeline Projects', m.pipeline, 'Excludes On Hold')}
-      ${card('In Progress', m.inProgress, 'Kick-off, onboarding, training')}
-      ${card('On Hold', m.onHold, 'Counted outside active pipeline')}
-      ${card('Total GoLive', m.goLive, 'GoLive and warranty grouped')}
+      ${card('Total Projects', m.total)}
+      ${card('Total Users', m.users)}
+      ${card('In Progress', m.inProgress)}
+      ${card('On Hold', m.onHold)}
+      ${card('GoLive', m.goLive)}
     </section>
 
     <section class="dashboard-main-grid project-chart-grid">
       ${projectPieChart(projects)}
       ${chart('Package Distribution', countProjectsByPackage(projects), { caption: 'Projects by package', limit: 10 })}
     </section>
-    ${projectAttentionRows(projects)}
 
-    ${projects.length ? projectActiveView(projects) : `
-      <section class="panel project-empty-board">
-        <h2>No project data yet</h2>
-        <p class="subtle">Import the Excel workbook to populate the board.</p>
-      </section>
-    `}
+    ${projectActiveView(projects, latest)}
   `);
 }
 
@@ -2618,6 +2542,26 @@ function trendSvg(data) {
         return `<circle cx="${x}" cy="${y}" r="5" tabindex="0" aria-label="${escapeHtml(`${periodLabel(key)}: ${value} issues`)}"><title>${escapeHtml(periodLabel(key))}: ${value} issues</title></circle>`;
       }).join('')}
     </svg>
+  `;
+}
+
+function projectImportPanel(latest) {
+  return `
+    <section class="panel project-import-panel">
+      <div>
+        <div class="section-label">Excel Import</div>
+        <h2>Implementation Project Data</h2>
+        <p class="subtle">Upload the deal summary Excel file. Matching projects update from the newest import instead of duplicating.</p>
+      </div>
+      <div class="project-import-actions">
+        <input type="file" accept=".xlsx" data-action="project-xlsx-file">
+        <button class="button primary" data-action="upload-project-xlsx">${icon('upload')} Import Excel</button>
+        <button class="button" data-action="add-project">Add Project</button>
+      </div>
+      <div class="project-import-meta">
+        ${latest ? `Latest: <strong>${escapeHtml(middleEllipsis(latest.filename, 34))}</strong> / ${latest.valid_rows} projects / ${displayDate(latest.imported_at)}` : 'No project workbook imported yet.'}
+      </div>
+    </section>
   `;
 }
 
@@ -3511,7 +3455,7 @@ function projectEditModal() {
             </div>
           </section>
           <section class="modal-section">
-            <h2>Milestones</h2>
+            <h2>Processes</h2>
             <div class="project-edit-grid four">
               <label><span>Kick-off</span>${projectInput(project, 'kickoff_date', 'date')}</label>
               <label><span>Onboarding</span>${projectInput(project, 'onboarding_date', 'date')}</label>
@@ -4398,9 +4342,14 @@ async function clientApi(path, options = {}) {
       if (!key) continue;
       const existing = existingByKey.get(key);
       const id = existing?.id ?? store.nextProjectId++;
+      const nextProject = { ...(existing ?? {}), ...incoming };
+      for (const field of ['customer_name', 'project_name', 'package_type', 'user_count', 'source_status', 'kickoff_date', 'onboarding_date', 'training_date', 'golive_date', 'notes', 'timeline_info']) {
+        if ((incoming[field] === null || incoming[field] === undefined || incoming[field] === '') && existing?.[field]) {
+          nextProject[field] = existing[field];
+        }
+      }
       existingByKey.set(key, {
-        ...(existing ?? {}),
-        ...incoming,
+        ...nextProject,
         id,
         source_key: existing?.source_key ?? incoming.source_key ?? `project:${key}`,
         created_at: existing?.created_at ?? now,
@@ -4866,6 +4815,7 @@ app.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'add-project') {
+      if (!window.confirm('Add a new manual project?')) return;
       addProject();
       return;
     }
@@ -5010,13 +4960,6 @@ app.addEventListener('click', async (event) => {
     const key = dashboardSelectOption.dataset.dashboardSelect;
     state.dashboard[key] = dashboardSelectOption.dataset.value ?? '';
     if (key === 'distribution_grain') state.dashboard.distribution_period = '';
-    render();
-    return;
-  }
-
-  const projectMode = closestFromEvent(event, '[data-project-mode]')?.dataset.projectMode;
-  if (projectMode) {
-    state.projectTracking.viewMode = projectMode;
     render();
     return;
   }
