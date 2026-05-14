@@ -1,31 +1,32 @@
 const app = document.querySelector('#app');
 const STORAGE_KEY = 'customer_service_team_hub_demo_v1';
-const AUTH_TOKEN_KEY = `${STORAGE_KEY}_auth_token`;
-const AUTH_USER_KEY = `${STORAGE_KEY}_auth_user`;
-const AUTH_USERS_KEY = `${STORAGE_KEY}_auth_users`;
 
-function storedAuthUser() {
-  try {
-    return JSON.parse(localStorage.getItem(AUTH_USER_KEY) || 'null');
-  } catch {
-    return null;
-  }
+let _filteredCache = null;
+let _searchDebounce = null;
+let _pendingUploadFiles = [];
+let _meetingEditPhotos = [null, null];
+let _meetingNextId = 1;
+const CRISP_AI_KEY = `${STORAGE_KEY}_crisp_ai`;
+const MEETING_KEY = `${STORAGE_KEY}_meeting`;
+const MANUAL_KEY = `${STORAGE_KEY}_manual`;
+
+function loadCrispAiData() {
+  try { return JSON.parse(localStorage.getItem(CRISP_AI_KEY) || '{}'); } catch { return {}; }
 }
-
-function loadClientUsers() {
-  try {
-    return JSON.parse(localStorage.getItem(AUTH_USERS_KEY) || '{}');
-  } catch {
-    return {};
-  }
+function saveCrispAiData() {
+  localStorage.setItem(CRISP_AI_KEY, JSON.stringify(state.crisp.aiData));
 }
-
-function saveClientUsers(users) {
-  localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(users));
+function loadMeetingData() {
+  try { return JSON.parse(localStorage.getItem(MEETING_KEY) || '{}'); } catch { return {}; }
 }
-
-function clientTokenForUser(user) {
-  return btoa(`${user.id}:${user.username}`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+function saveMeetingData() {
+  localStorage.setItem(MEETING_KEY, JSON.stringify({ summaryData: state.meeting.summaryData, moments: state.meeting.moments }));
+}
+function loadManualData() {
+  try { return JSON.parse(localStorage.getItem(MANUAL_KEY) || '{}'); } catch { return {}; }
+}
+function saveManualData() {
+  localStorage.setItem(MANUAL_KEY, JSON.stringify({ entries: state.manual.entries }));
 }
 
 const state = {
@@ -38,15 +39,6 @@ const state = {
   rules: [],
   selectedIssueId: null,
   selectedProjectId: null,
-  auth: {
-    token: localStorage.getItem(AUTH_TOKEN_KEY) || '',
-    user: storedAuthUser(),
-    modal: '',
-    draft: {
-      username: '',
-      password: ''
-    }
-  },
   openFilter: '',
   openDatePicker: '',
   datePickerMonth: '',
@@ -92,6 +84,8 @@ const state = {
     viewMode: 'monthly',
     activeView: 'board',
     importReview: null,
+    importModal: false,
+    timelineSort: { field: 'kickoff_date', dir: 'asc' },
     filters: {
       search: '',
       package_type: '',
@@ -99,14 +93,39 @@ const state = {
       review: ''
     }
   },
+  uploadModal: '',
+  uploadLoading: false,
+  uploadResult: null,
+  uploadSelectedFiles: [],
   crisp: {
     operators: [],
     batches: [],
     months: [],
     activeView: 'performance',
-    selectedMonth: ''
+    selectedMonth: '',
+    aiData: loadCrispAiData()
+  },
+  meeting: {
+    selectedMonth: '',
+    summaryData: {},
+    moments: [],
+    editingMomentId: null,
+    addMomentOpen: false,
+    summaryModalOpen: false
+  },
+  manual: {
+    selectedMonth: '',
+    entries: [],
+    editMode: false,
+    addModalOpen: false,
+    editingEntryId: null
   }
 };
+const _meetingInit = loadMeetingData();
+state.meeting.summaryData = _meetingInit.summaryData ?? {};
+state.meeting.moments = _meetingInit.moments ?? [];
+const _manualInit = loadManualData();
+state.manual.entries = _manualInit.entries ?? [];
 
 const categories = [
   'Activity Plan',
@@ -154,7 +173,9 @@ const labels = {
   dashboard: 'Executive Briefing',
   board: 'Issue Board',
   table: 'Issue Table',
-  settings: 'Settings'
+  settings: 'Settings',
+  'meeting': 'Venio Meeting',
+  'manual': 'Venio Manual'
 };
 
 const brandAssets = {
@@ -460,6 +481,7 @@ function numRange(value, min, max) {
 }
 
 function filteredIssues() {
+  if (_filteredCache !== null) return _filteredCache;
   const f = state.filters;
   const search = norm(f.search).toLowerCase();
   let result = state.issues.filter((issue) => {
@@ -499,6 +521,7 @@ function filteredIssues() {
   });
 
   result = [...result].sort((a, b) => compareIssues(a, b, f.sort, f.sort_dir));
+  _filteredCache = result;
   return result;
 }
 
@@ -763,7 +786,9 @@ function icon(name) {
     priority: '&#9888;',
     time: '&#9716;',
     customer: '&#9787;',
-    category: '&#9673;'
+    category: '&#9673;',
+    'meeting': '&#128197;',
+    'manual': '&#128214;'
   };
   return icons[name] ?? '&bull;';
 }
@@ -941,16 +966,6 @@ function filterPanel() {
       </div>
       <div class="toolbar primary-toolbar">
         <input class="search" data-filter="search" value="${escapeHtml(state.filters.search)}" placeholder="${icon('search')} Search issue key, customer, subject...">
-        <select data-filter-one="solved">
-          <option value="">Solved / Unsolved</option>
-          <option value="solved" ${state.filters.solved === 'solved' ? 'selected' : ''}>Solved</option>
-          <option value="unsolved" ${state.filters.solved === 'unsolved' ? 'selected' : ''}>Unsolved</option>
-        </select>
-        <select data-filter-one="overdue">
-          <option value="">Overdue / Not overdue</option>
-          <option value="overdue" ${state.filters.overdue === 'overdue' ? 'selected' : ''}>Overdue</option>
-          <option value="not-overdue" ${state.filters.overdue === 'not-overdue' ? 'selected' : ''}>Not overdue</option>
-        </select>
         <select data-filter-one="sort">
           <option value="newest" ${state.filters.sort === 'newest' ? 'selected' : ''}>Newest report date</option>
           <option value="oldest" ${state.filters.sort === 'oldest' ? 'selected' : ''}>Oldest report date</option>
@@ -962,9 +977,6 @@ function filterPanel() {
           <option value="type" ${state.filters.sort === 'type' ? 'selected' : ''}>Issue Type</option>
           <option value="category" ${state.filters.sort === 'category' ? 'selected' : ''}>Venio category</option>
         </select>
-        <button class="button preset-toggle ${state.activePreset === 'high' ? 'active' : ''}" data-preset="high">High Priority Pending</button>
-        <button class="button preset-toggle ${state.activePreset === '36' ? 'active' : ''}" data-preset="36">Over 36 Hours Pending</button>
-        <button class="button preset-toggle ${state.activePreset === '24' ? 'active' : ''}" data-preset="24">Over 24 Hours Pending</button>
       </div>
       ${chips.length ? `<div class="chip-row">${chips.slice(0, 8).map((chip) => `<span class="chip">${escapeHtml(chip)}</span>`).join('')}${chips.length > 8 ? `<span class="chip">+${chips.length - 8} more</span>` : ''}</div>` : '<div class="chip-row"><span class="chip muted-chip">No active filters</span></div>'}
       <div class="filter-grid">
@@ -1100,21 +1112,23 @@ function renderShell(content) {
     { key: 'home', label: labels.home },
     { key: 'project-dashboard', label: labels['project-dashboard'] },
     { key: 'crisp-performance', label: labels['crisp-performance'] },
-    { key: 'dashboard', label: 'Venio Issue' }
+    { key: 'dashboard', label: 'Venio Issue' },
+    { key: 'meeting', label: labels['meeting'] },
+    { key: 'manual', label: labels['manual'] }
   ];
   const venioNav = ['upload', 'jira-upload', 'board', 'table', 'settings'];
   const venioWorkspaceViews = ['dashboard', ...venioNav];
   const isVenioWorkspace = venioWorkspaceViews.includes(state.view);
-  const authControls = `
-    <div class="auth-chip">
-      <span>${escapeHtml(state.auth.user.username)}</span>
-      <button class="button ghost" data-action="sign-out">Sign out</button>
-    </div>
-  `;
   return `
     <div class="shell">
       <aside class="sidebar">
-        <div class="brand sidebar-brand">${brandLogo('venio', 'Venio', 'brand-logo-sidebar')}<span>Insight</span></div>
+        <div class="sidebar-team-header">
+          <div class="sidebar-team-avatar">&#128101;</div>
+          <div class="sidebar-team-info">
+            <div class="sidebar-team-label">Solution Consultant</div>
+            <div class="sidebar-team-name">Team ATLAS</div>
+          </div>
+        </div>
         <nav class="nav">
           ${moduleNav.map((item) => `
             <button class="${state.view === item.key ? 'active' : ''}" data-view="${item.key}">
@@ -1130,94 +1144,24 @@ function renderShell(content) {
             `).join('')}
           ` : ''}
         </nav>
+        <div class="sidebar-footer">
+          <div class="sidebar-footer-icon">&#129302;</div>
+          <div class="sidebar-footer-dots">
+            <span></span><span></span><span></span>
+          </div>
+          <div class="sidebar-footer-text">CS Team Hub<br>v1.0</div>
+        </div>
       </aside>
       <main class="main">
-        <div class="topbar">
-          <div class="crumb">Workspace / <strong>${labels[state.view]}</strong></div>
-          ${isVenioWorkspace ? `
-            <div class="topbar-center">
-              <input class="search topbar-search" data-filter="search" value="${escapeHtml(state.filters.search)}" placeholder="${icon('search')} Search issues...">
-            </div>
-          ` : '<div class="topbar-center"></div>'}
-          ${isVenioWorkspace ? `
-            <div class="actions topbar-actions">
-              <button class="button primary" data-action="print-report">${icon('export')} PDF</button>
-              <button class="button" data-action="export-excel">${icon('export')} Excel</button>
-              ${authControls}
-            </div>
-          ` : authControls}
-        </div>
         ${content}
       </main>
       ${modal()}
       ${projectEditModal()}
       ${projectImportModal()}
+      ${projectAddImportModal()}
+      ${genericUploadModal()}
       ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
     </div>
-  `;
-}
-
-function renderAuthGate() {
-  const mode = state.auth.modal === 'register' ? 'register' : 'signin';
-  const isRegister = mode === 'register';
-  return `
-    <main class="auth-gate">
-      <section class="auth-gate-shell">
-        <aside class="auth-welcome-panel">
-          <div class="brand hub-brand">
-            ${brandLogo('venio', 'Venio', 'brand-logo-header')}
-            <span>Insight Hub</span>
-          </div>
-          <div class="auth-welcome-copy">
-            <div class="landing-kicker">Private CS Workspace</div>
-            <h1>One hub for each team member.</h1>
-            <p>Sign in first, then import and manage your own project dashboard, issue reports, notes, and settings.</p>
-          </div>
-          <div class="auth-proof-list" aria-label="Workspace benefits">
-            <div><strong>Independent data</strong><span>Imports belong to your account.</span></div>
-            <div><strong>Safe reimports</strong><span>Issues merge by key, projects merge by name.</span></div>
-            <div><strong>Any computer</strong><span>Use Vercel KV to sync your workspace online.</span></div>
-          </div>
-        </aside>
-        <section class="auth-gate-panel" aria-labelledby="auth-title">
-          <div class="auth-mode-tabs" aria-label="Choose account mode">
-            <button class="${!isRegister ? 'active' : ''}" data-action="open-auth" data-mode="signin" type="button">Sign in</button>
-            <button class="${isRegister ? 'active' : ''}" data-action="open-auth" data-mode="register" type="button">Register</button>
-          </div>
-          <div>
-            <div class="section-label">${isRegister ? 'New workspace' : 'Welcome back'}</div>
-            <h2 id="auth-title">${isRegister ? 'Create your account' : 'Sign in to continue'}</h2>
-            <p>${isRegister ? 'Start with an empty private hub and add your own data.' : 'Open your personal dashboard and saved imports.'}</p>
-          </div>
-          <div class="auth-body">
-            <label>
-              <span>Username</span>
-              <input data-auth-field="username" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="for example: nicha" value="${escapeHtml(state.auth.draft.username)}">
-              <small>Use the same username on another computer to open your workspace.</small>
-            </label>
-            <label>
-              <span>Password</span>
-              <div class="auth-password-wrap">
-                <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="At least 3 characters" value="${escapeHtml(state.auth.draft.password)}">
-                <button type="button" data-action="toggle-password">Show</button>
-              </div>
-              <small>This login is intentionally simple for internal dashboard use.</small>
-            </label>
-            <button class="button primary auth-submit-button" data-action="auth-submit" data-mode="${mode}">
-              ${isRegister ? 'Create Account' : 'Sign In'}
-            </button>
-          </div>
-          <p class="auth-switch-copy">
-            ${isRegister ? 'Already have an account?' : 'New to this hub?'}
-            <button type="button" data-action="open-auth" data-mode="${isRegister ? 'signin' : 'register'}">
-              ${isRegister ? 'Sign in instead' : 'Create an account'}
-            </button>
-          </p>
-          <p class="auth-footnote">No shared dashboard is shown before sign in.</p>
-      </section>
-      </section>
-      ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
-    </main>
   `;
 }
 
@@ -1251,13 +1195,13 @@ function projectPageHeader(title, hint) {
         <span><strong>${m.total}</strong> projects</span>
         <span><strong>${m.users}</strong> users</span>
         <span><strong>${m.inProgress}</strong> in progress</span>
+        <button class="button" type="button" data-action="open-project-import-modal">${icon('upload')} Import</button>
       </div>
     </div>
   `;
 }
 
 function renderLanding() {
-  const signedIn = Boolean(state.auth.user);
   const scopedVenioIssues = venioIssues(state.issues);
   const venioIssueCount = scopedVenioIssues.length;
   const venioOpen = metrics(scopedVenioIssues).open;
@@ -1293,6 +1237,26 @@ function renderLanding() {
       action: 'Open workspace',
       variant: 'live',
       available: true
+    },
+    {
+      key: 'meeting',
+      icon: 'meeting',
+      title: 'Venio Meeting',
+      status: 'Live',
+      meta: `Monthly meeting summary & on-site capture moments`,
+      action: 'Open workspace',
+      variant: 'live',
+      available: true
+    },
+    {
+      key: 'manual',
+      icon: 'manual',
+      title: 'Venio Manual',
+      status: 'Live',
+      meta: `Articles, improvements & videos by month`,
+      action: 'Open workspace',
+      variant: 'live',
+      available: true
     }
   ];
 
@@ -1304,21 +1268,14 @@ function renderLanding() {
           <span>Insight Hub</span>
         </div>
         <div class="landing-auth-actions">
-          ${signedIn ? `
-            <span class="landing-user-pill">${escapeHtml(state.auth.user.username)}</span>
-            <button class="landing-primary-action" data-view="dashboard" aria-label="Open Venio Issue workspace">Open Venio Issue</button>
-            <button class="button ghost" data-action="sign-out">Sign out</button>
-          ` : `
-            <button class="button ghost" data-action="open-auth" data-mode="signin">Sign in</button>
-            <button class="landing-primary-action" data-action="open-auth" data-mode="register">Register</button>
-          `}
+          <button class="landing-primary-action" data-view="dashboard" aria-label="Open Venio Issue workspace">Open Venio Issue</button>
         </div>
       </header>
       <section class="landing-hero">
         <div class="landing-copy">
           <div class="landing-kicker">Operations Intelligence</div>
           <h1>Choose a workspace</h1>
-          <p>${signedIn ? 'Select a workspace to continue with your private saved data.' : 'Sign in or register from this hub page before opening any workspace.'}</p>
+          <p>Select a workspace to get started.</p>
           <div class="landing-context-pills" aria-label="Venio CRM context">
             <span>Connecting your customers</span>
             <span>CRM</span>
@@ -1331,14 +1288,13 @@ function renderLanding() {
         <div class="workspace-section-head">
           <div>
             <h2 id="workspace-title">Workspaces</h2>
-            <p>${signedIn ? 'Open the live workspaces connected to your account.' : 'You can see the hub menu, but workspace access requires sign in.'}</p>
+            <p>Open a live workspace.</p>
           </div>
         </div>
         <div class="module-grid">
           ${modules.map(workspaceCard).join('')}
         </div>
       </section>
-      ${authModal()}
       ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
     </main>
   `;
@@ -1346,12 +1302,10 @@ function renderLanding() {
 
 function workspaceCard(module) {
   const disabledText = !module.available ? 'true' : 'false';
-  const requiresSignIn = !state.auth.user && module.available;
-  const actionLabel = requiresSignIn ? 'Sign in to open' : module.action;
-  const cardLabel = `${module.title}. Status: ${module.status}. ${actionLabel}.`;
+  const cardLabel = `${module.title}. Status: ${module.status}. ${module.action}.`;
   return `
     <button
-      class="module-card ${module.variant} ${requiresSignIn ? 'locked' : ''}"
+      class="module-card ${module.variant}"
       data-view="${module.key}"
       data-availability="${module.available ? 'available' : 'coming-soon'}"
       aria-label="${escapeHtml(cardLabel)}"
@@ -1365,7 +1319,7 @@ function workspaceCard(module) {
         <small>${escapeHtml(module.meta)}</small>
         ${module.description ? `<em>${escapeHtml(module.description)}</em>` : ''}
       </span>
-      <span class="module-action ${module.variant}">${escapeHtml(actionLabel)}</span>
+      <span class="module-action ${module.variant}">${escapeHtml(module.action)}</span>
     </button>
   `;
 }
@@ -1413,6 +1367,55 @@ function countProjectsByPackage(projects) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]);
 }
 
+function packageDistributionStats(projects) {
+  const stats = new Map();
+  for (const project of projects) {
+    const key = norm(project.package_type) || 'Unknown';
+    const current = stats.get(key) ?? { label: key, projects: 0, users: 0 };
+    current.projects += 1;
+    current.users += number(project.user_count);
+    stats.set(key, current);
+  }
+  return [...stats.values()].sort((a, b) => {
+    if (b.projects !== a.projects) return b.projects - a.projects;
+    if (b.users !== a.users) return b.users - a.users;
+    return compareText(a.label, b.label);
+  });
+}
+
+function packageDistributionChart(projects) {
+  const rows = packageDistributionStats(projects);
+  const maxProjects = Math.max(1, ...rows.map((row) => row.projects));
+  const maxUsers = Math.max(1, ...rows.map((row) => row.users));
+  return `
+    <div class="panel chart-panel package-distribution-panel">
+      <div class="panel-title">
+        <h2>Package Distribution</h2>
+        <span>Projects and total users by package</span>
+      </div>
+      <div class="package-distribution-list">
+        ${rows.slice(0, 10).map((row) => `
+          <div class="package-distribution-row chart-hoverable" tabindex="0" aria-label="${escapeHtml(`${row.label}: ${row.projects} projects, ${row.users} users`)}" data-chart-tooltip="${escapeHtml(`${row.label}: ${row.projects} projects, ${row.users} users`)}">
+            <div class="package-distribution-label" title="${escapeHtml(row.label)}">${escapeHtml(row.label)}</div>
+            <div class="package-distribution-metrics">
+              <div class="package-distribution-metric">
+                <span class="package-distribution-key">Projects</span>
+                <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, (row.projects / maxProjects) * 100)}%"></div></div>
+                <strong>${row.projects}</strong>
+              </div>
+              <div class="package-distribution-metric users">
+                <span class="package-distribution-key">Users</span>
+                <div class="bar-track users"><div class="bar-fill bar-fill-users" style="width:${Math.max(row.users > 0 ? 3 : 0, (row.users / maxUsers) * 100)}%"></div></div>
+                <strong>${row.users}</strong>
+              </div>
+            </div>
+          </div>
+        `).join('') || '<div class="subtle">No package data</div>'}
+      </div>
+    </div>
+  `;
+}
+
 function projectStageProgress(project) {
   const grouped = projectStageGroup(project);
   const activeIndex = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(grouped);
@@ -1426,30 +1429,76 @@ function projectStageProgress(project) {
   `;
 }
 
+function projectPiePoint(angle, radius) {
+  const radians = ((angle - 90) * Math.PI) / 180;
+  return {
+    x: 50 + Math.cos(radians) * radius,
+    y: 50 + Math.sin(radians) * radius
+  };
+}
+
+function projectPieSlicePolygon(startAngle, endAngle, outerRadius = 49.5, innerRadius = 26.7) {
+  const sweep = Math.max(0, endAngle - startAngle);
+  if (!sweep) return '';
+  const steps = Math.max(6, Math.ceil(sweep / 12));
+  const outer = [];
+  const inner = [];
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = startAngle + (sweep * index) / steps;
+    const outerPoint = projectPiePoint(angle, outerRadius);
+    const innerPoint = projectPiePoint(angle, innerRadius);
+    outer.push(`${outerPoint.x.toFixed(2)}% ${outerPoint.y.toFixed(2)}%`);
+    inner.unshift(`${innerPoint.x.toFixed(2)}% ${innerPoint.y.toFixed(2)}%`);
+  }
+  return [...outer, ...inner].join(', ');
+}
+
 function projectPieChart(projects) {
   const data = countProjectsByStage(projects);
-  const total = Math.max(1, projects.length);
+  const totalProjects = projects.length;
+  const total = Math.max(1, totalProjects);
   const colors = ['#4ea4f8', '#615cf6', '#22b873', '#14a38b', '#e64679'];
   let cursor = 0;
-  const gradient = data.map(([, value], index) => {
-    const start = cursor;
-    cursor += (value / total) * 360;
-    return `${colors[index]} ${start}deg ${cursor}deg`;
-  }).join(', ');
+  const slices = data
+    .map(([stage, value], index) => {
+      if (value <= 0) return null;
+      const start = cursor;
+      cursor += (value / total) * 360;
+      return {
+        stage,
+        value,
+        color: colors[index],
+        tooltip: `${stage}: ${value} project${value === 1 ? '' : 's'}`,
+        clipPath: projectPieSlicePolygon(start, cursor)
+      };
+    })
+    .filter(Boolean);
 
   return `
     <div class="panel project-pie-panel">
       <div class="panel-title">
         <h2>Project Stage Distribution</h2>
-        <span>${projects.length} projects</span>
+        <span>${totalProjects} projects</span>
       </div>
       <div class="project-pie-layout">
-        <div class="project-pie" style="background: conic-gradient(${gradient || '#e4ebf4 0deg 360deg'});" title="${projects.length} total projects">
-          <span>${projects.length}</span>
+        <div class="project-pie" aria-label="Project stage distribution pie chart">
+          <div class="project-pie-surface">
+            ${slices.map((slice) => `
+              <button
+                class="project-pie-segment"
+                type="button"
+                style="--slice-color:${slice.color}; clip-path: polygon(${slice.clipPath});"
+                aria-label="${escapeHtml(slice.tooltip)}"
+                data-chart-tooltip="${escapeHtml(slice.tooltip)}"
+                title="${escapeHtml(slice.tooltip)}"
+              ></button>
+            `).join('')}
+          </div>
+          <span>${totalProjects}</span>
         </div>
         <div class="project-pie-legend">
           ${data.map(([stage, value], index) => `
-            <div class="chart-hoverable" tabindex="0" aria-label="${escapeHtml(`${stage}: ${value} projects`)}" data-chart-tooltip="${escapeHtml(`${stage}: ${value} projects`)}">
+            <div>
               <i style="background:${colors[index]}"></i>
               <span>${escapeHtml(stage)}</span>
               <strong>${value}</strong>
@@ -1566,12 +1615,48 @@ function projectStageDisplay(project) {
   return `<span class="stage-select-wrap stage-${slug(stage)}"><span>${escapeHtml(stage)}</span></span>`;
 }
 
+function projectElapsedDays(project) {
+  const kickoff = dateValue(project.kickoff_date);
+  if (!kickoff) return null;
+  return Math.floor((Date.now() - kickoff.getTime()) / 86400000);
+}
+
+function projectCardStageMini(project) {
+  const stages = [
+    'kickoff_date',
+    'onboarding_date',
+    'training_date',
+    'golive_date'
+  ];
+  const grouped = projectStageGroup(project);
+  const activeIndex = ['Kick-off', 'Onboarding', 'Training', 'GoLive'].indexOf(grouped);
+  return `
+    <div class="project-card-stage-strip">
+      ${stages.map((field, index) => {
+        const date = project[field];
+        const stateClass = grouped === 'On Hold' ? 'paused'
+          : index < activeIndex ? 'done'
+          : index === activeIndex ? 'current'
+          : 'waiting';
+        return `
+          <div class="project-card-stage-step ${stateClass}">
+            <div class="stage-step-dot"></div>
+            <span class="stage-step-date">${date ? escapeHtml(displayDate(date).replace(/ \d{4}$/, '')) : '—'}</span>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
 function projectBoardCard(project) {
   const missing = projectMissingFields(project);
+  const elapsed = projectElapsedDays(project);
   return `
     <article class="project-board-card stage-${slug(projectStageGroup(project))}" data-open-project="${project.id}" role="button" tabindex="0" aria-label="Edit ${escapeHtml(project.customer_name || project.project_name || 'project')}">
       <div class="project-board-card-head">
         ${projectPackageDisplay(project)}
+        ${elapsed !== null ? `<span class="project-card-elapsed">${elapsed}d</span>` : ''}
       </div>
       <div class="project-card-name">
         <strong class="project-card-customer">${escapeHtml(project.customer_name || '-')}</strong>
@@ -1584,12 +1669,7 @@ function projectBoardCard(project) {
         </div>
         ${projectStageDisplay(project)}
       </div>
-      <div class="project-card-dates">
-        ${projectCardDate(project, 'Kick-off', 'kickoff_date')}
-        ${projectCardDate(project, 'Onboarding', 'onboarding_date')}
-        ${projectCardDate(project, 'Training', 'training_date')}
-        ${projectCardDate(project, 'GoLive', 'golive_date')}
-      </div>
+      ${projectCardStageMini(project)}
       ${missing.length ? `<div class="project-card-alert">${missing.length} fields need review</div>` : ''}
     </article>
   `;
@@ -1599,8 +1679,7 @@ function projectViewTabs() {
   const tabs = [
     ['board', 'Board', 'board'],
     ['timeline', 'Timeline', 'time'],
-    ['calendar', 'Calendar', 'calendar'],
-    ['import', 'Import', 'upload']
+    ['calendar', 'Calendar', 'calendar']
   ];
   return `
     <div class="project-board-tabs" aria-label="Project views">
@@ -1685,11 +1764,12 @@ function projectBoardFilters(projects, filteredProjects) {
   `;
 }
 
-function projectKanbanBoard(projects) {
+function projectKanbanBoard(projects, allProjects = projects) {
   const columns = projectBoardColumns(projects);
   return `
     <section class="project-board-shell">
       ${projectViewTabs()}
+      ${projectBoardFilters(allProjects, projects)}
       <div class="project-board">
         ${columns.map(({ stage, projects: columnProjects }) => `
           <section class="project-board-column stage-${slug(stage)}">
@@ -1716,36 +1796,65 @@ function projectKanbanBoard(projects) {
   `;
 }
 
-function projectTimelineView(projects) {
-  const rows = [...projects].sort((a, b) => compareDates(a.kickoff_date, b.kickoff_date) || compareText(a.customer_name, b.customer_name));
+function projectTimelineSortedRows(projects) {
+  const { field, dir } = state.projectTracking.timelineSort;
+  return [...projects].sort((a, b) => {
+    let cmp = 0;
+    if (field === 'package_type') cmp = compareText(a.package_type, b.package_type);
+    else if (field === 'user_count') cmp = number(a.user_count) - number(b.user_count);
+    else if (field === 'stage') cmp = compareText(projectStageGroup(a), projectStageGroup(b));
+    else if (field === 'elapsed') cmp = (projectElapsedDays(a) ?? -1) - (projectElapsedDays(b) ?? -1);
+    else cmp = compareDates(a.kickoff_date, b.kickoff_date);
+    if (cmp !== 0) return dir === 'desc' ? -cmp : cmp;
+    return compareText(a.customer_name, b.customer_name);
+  });
+}
+
+function timelineSortHeader(label, field) {
+  const { field: activeField, dir } = state.projectTracking.timelineSort;
+  const isActive = activeField === field;
+  const icon = isActive ? (dir === 'asc' ? '↑' : '↓') : '↕';
+  return `<th class="sortable ${isActive ? `sort-${dir}` : ''}" data-timeline-sort="${field}">${escapeHtml(label)} <span class="sort-icon">${icon}</span></th>`;
+}
+
+function projectTimelineView(projects, allProjects = projects) {
+  const rows = projectTimelineSortedRows(projects);
   const processStages = ['Kick-off', 'Onboarding', 'Training', 'GoLive'];
   return `
     <section class="project-board-shell">
       ${projectViewTabs()}
+      ${projectBoardFilters(allProjects, projects)}
       <section class="panel project-process-panel">
         <div class="panel-title">
           <div>
-            <h2>Project Processes</h2>
+            <h2>Project Timeline</h2>
             <span>Onboarding journey by customer</span>
           </div>
           <span>${rows.length} records</span>
         </div>
         <div class="table-wrap project-process-wrap">
           <table class="project-process-table">
+            <colgroup>
+              <col class="col-customer">
+              <col class="col-package">
+              <col class="col-users">
+              <col class="col-journey">
+              <col class="col-total">
+            </colgroup>
             <thead>
               <tr>
-                <th>Customer</th>
-                <th>Package</th>
-                <th>Users</th>
-                <th>Stage</th>
-                <th>Onboarding Journey</th>
-                <th>Kick-off</th>
+                <th>Customer Name</th>
+                ${timelineSortHeader('Package', 'package_type')}
+                ${timelineSortHeader('Users', 'user_count')}
+                <th>Journey</th>
+                ${timelineSortHeader('Total Days', 'elapsed')}
               </tr>
             </thead>
             <tbody>
               ${rows.map((project) => {
                 const grouped = projectStageGroup(project);
                 const activeIndex = processStages.indexOf(grouped);
+                const elapsed = projectElapsedDays(project);
                 return `
                   <tr class="stage-${slug(grouped)}" data-open-project="${project.id}" tabindex="0" aria-label="Edit ${escapeHtml(project.customer_name || project.project_name || 'project')}">
                     <td>
@@ -1754,18 +1863,18 @@ function projectTimelineView(projects) {
                     </td>
                     <td>${projectPackageDisplay(project)}</td>
                     <td><strong>${number(project.user_count)}</strong></td>
-                    <td>${projectStageBadge(project)}</td>
                     <td>
                       <div class="project-process-steps">
-                        ${processStages.map((stage, index) => `
-                          <span class="${grouped === 'On Hold' ? 'paused' : index < activeIndex ? 'done' : index === activeIndex ? 'current' : 'waiting'}">${escapeHtml(stage)}</span>
-                        `).join('')}
+                        ${processStages.map((stage, index) => {
+                          const cls = grouped === 'On Hold' ? 'paused' : index < activeIndex ? 'done' : index === activeIndex ? 'current' : 'waiting';
+                          return `<span class="${cls}">${escapeHtml(stage)}</span>`;
+                        }).join('')}
                       </div>
                     </td>
-                    <td>${project.kickoff_date ? escapeHtml(displayDate(project.kickoff_date)) : '-'}</td>
+                    <td><strong>${elapsed !== null ? `${elapsed} days` : '-'}</strong></td>
                   </tr>
                 `;
-              }).join('') || '<tr><td colspan="6">No project data yet.</td></tr>'}
+              }).join('') || '<tr><td colspan="5">No project data yet.</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -1785,12 +1894,13 @@ function projectCalendarEvents(projects) {
   return events.sort((a, b) => compareDates(a.date, b.date) || compareText(a.project.customer_name, b.project.customer_name));
 }
 
-function projectCalendarView(projects) {
+function projectCalendarView(projects, allProjects = projects) {
   const events = projectCalendarEvents(projects);
   const months = [...new Set(events.map((event) => event.month))];
   return `
     <section class="project-board-shell">
       ${projectViewTabs()}
+      ${projectBoardFilters(allProjects, projects)}
       <div class="project-calendar-grid">
         ${months.map((month) => `
           <section class="panel project-calendar-month">
@@ -1822,31 +1932,27 @@ function projectCalendarView(projects) {
   `;
 }
 
-function projectActiveView(projects, latest) {
+function projectActiveView(projects) {
   const renderers = {
     board: projectKanbanBoard,
     timeline: projectTimelineView,
     calendar: projectCalendarView
   };
-  if (state.projectTracking.activeView === 'import') {
+  if (!renderers[state.projectTracking.activeView]) state.projectTracking.activeView = 'board';
+  const filteredProjects = filteredProjectTrackingProjects(projects);
+  if (!filteredProjects.length) {
     return `
       <section class="project-board-shell">
         ${projectViewTabs()}
-        ${projectImportPanel(latest)}
+        ${projectBoardFilters(projects, filteredProjects)}
+        <section class="panel project-empty-board">
+          <h2>${projects.length ? 'No projects match these filters' : 'No project data yet'}</h2>
+          <p class="subtle">${projects.length ? 'Adjust package, stage, review status, or search terms.' : 'Click the Import button above to upload the Excel workbook.'}</p>
+        </section>
       </section>
     `;
   }
-  if (!renderers[state.projectTracking.activeView]) state.projectTracking.activeView = 'board';
-  const filteredProjects = filteredProjectTrackingProjects(projects);
-  return `
-    ${projectBoardFilters(projects, filteredProjects)}
-    ${filteredProjects.length ? renderers[state.projectTracking.activeView](filteredProjects) : `
-      <section class="panel project-empty-board">
-        <h2>${projects.length ? 'No projects match these filters' : 'No project data yet'}</h2>
-        <p class="subtle">${projects.length ? 'Adjust package, stage, review status, or search keywords.' : 'Open the Import tab to upload the Excel workbook.'}</p>
-      </section>
-    `}
-  `;
+  return renderers[state.projectTracking.activeView](filteredProjects, projects);
 }
 
 function projectInput(project, field, type = 'text') {
@@ -1917,12 +2023,29 @@ function projectTimelineStep(project, stage, field, complete, current) {
   `;
 }
 
+function projectHeroBanner() {
+  const now = new Date();
+  const monthYear = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  const mascotSrc = '/assets/robot-mascot.png';
+  return `
+    <div class="project-hero-banner">
+      <div class="project-hero-text">
+        <div class="project-hero-title">Venio Project</div>
+        <div class="project-hero-date">${escapeHtml(monthYear)}</div>
+      </div>
+      <div class="project-hero-mascot">
+        <img src="${mascotSrc}" alt="Team mascot" onerror="this.replaceWith(document.createTextNode('🤖'))">
+      </div>
+    </div>
+  `;
+}
+
 function renderProjectDashboard() {
   const projects = state.projectTrackingProjects;
   const m = projectMetrics(projects);
-  const latest = state.projectTrackingBatches[0];
 
   return renderShell(`
+    ${projectHeroBanner()}
     ${projectPageHeader('Project Tracking Dashboard', 'Implementation pipeline, timeline health, and executive project status.')}
     <section class="cards project-kpis">
       ${card('Total Projects', m.total)}
@@ -1934,10 +2057,10 @@ function renderProjectDashboard() {
 
     <section class="dashboard-main-grid project-chart-grid">
       ${projectPieChart(projects)}
-      ${chart('Package Distribution', countProjectsByPackage(projects), { caption: 'Projects by package', limit: 10 })}
+      ${packageDistributionChart(projects)}
     </section>
 
-    ${projectActiveView(projects, latest)}
+    ${projectActiveView(projects)}
   `);
 }
 
@@ -2001,10 +2124,10 @@ function crispOperatorTable(operators) {
           <thead>
             <tr>
               <th>Operator</th>
-              <th>Conv.</th>
+              <th>Total Chat</th>
               <th>Rating</th>
-              <th>Median Response</th>
-              <th>Median Resolution</th>
+              <th>Avg. Response</th>
+              <th>Avg. Resolution</th>
             </tr>
           </thead>
           <tbody>
@@ -2122,19 +2245,271 @@ function crispMovementCard(label, metric, currentMonth, previousMonth, lowerIsBe
       <span>${escapeHtml(label)}</span>
       <strong>${escapeHtml(crispFormatMetric(metric, current))}</strong>
       <small>${escapeHtml(delta.text)} ${previousMonth ? `from ${periodLabel(previousMonth.month)}` : 'from previous month'}</small>
-      <em>${escapeHtml(delta.detail)}</em>
     </article>
+  `;
+}
+
+function crispAiForMonth(monthKey) {
+  return state.crisp.aiData[monthKey] ?? { firstResponseAvg: '', humanFirstResponseAvg: '', aiChatbotTotal: '', inboxTotal: '', topics: [] };
+}
+
+function hhmmssToSeconds(value) {
+  const s = String(value ?? '').trim();
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return Number(s) || null;
+  const m = s.match(/^(\d{1,3}):(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const total = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+  return total > 0 ? total : null;
+}
+
+function secondsToHhmmss(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  if (!s) return '00:00:00';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+}
+
+function crispAiResponseSeconds(monthKey) {
+  if (!monthKey) return null;
+  const ai = crispAiForMonth(monthKey);
+  const first = hhmmssToSeconds(ai.firstResponseAvg);
+  const human = hhmmssToSeconds(ai.humanFirstResponseAvg);
+  if (first === null || human === null || first <= 0 || human <= 0 || human >= first) return null;
+  return first - human;
+}
+
+function readAndSaveCrispAiForm(monthKey) {
+  const aiFields = {};
+  app.querySelectorAll(`[data-crisp-ai-field][data-ai-month="${monthKey}"]`).forEach((input) => {
+    aiFields[input.dataset.crispAiField] = input.value;
+  });
+  const topicNameInputs = [...app.querySelectorAll(`[data-crisp-topic-name][data-ai-month="${monthKey}"]`)];
+  const topics = topicNameInputs.map((nameInput, i) => {
+    const countInput = app.querySelector(`[data-crisp-topic-count="${i}"][data-ai-month="${monthKey}"]`);
+    return { name: nameInput.value, count: Number(countInput?.value) || 0 };
+  });
+  const existing = crispAiForMonth(monthKey);
+  state.crisp.aiData[monthKey] = { ...existing, ...aiFields, topics };
+}
+
+function crispPieChart(segments) {
+  const total = segments.reduce((sum, s) => sum + Number(s.value), 0);
+  if (!total) return '<div class="crisp-pie-empty"></div>';
+  let angle = 0;
+  const stops = segments.map((s) => {
+    const start = angle;
+    angle += (Number(s.value) / total) * 360;
+    return `${s.color} ${start.toFixed(1)}deg ${angle.toFixed(1)}deg`;
+  }).join(', ');
+  return `<div class="crisp-pie-donut" style="background: conic-gradient(${stops})"></div>`;
+}
+
+function crispAiFormPanel(monthKey) {
+  const ai = crispAiForMonth(monthKey);
+  const topics = ai.topics ?? [];
+  const aiSec = crispAiResponseSeconds(monthKey);
+  const months = crispMonthOptions();
+  const monthSelector = months.length > 1
+    ? `<select class="crisp-ai-month-select" data-crisp-selected-month>
+        ${months.map((m) => `<option value="${escapeHtml(m.month)}" ${m.month === monthKey ? 'selected' : ''}>${escapeHtml(periodLabel(m.month))}</option>`).join('')}
+      </select>`
+    : `<span class="crisp-ai-month-label">${escapeHtml(periodLabel(monthKey))}</span>`;
+  return `
+    <div class="crisp-ai-form-card">
+      <div class="crisp-ai-form-header">
+        <div class="crisp-ai-form-title">
+          <div class="crisp-ai-form-icon-wrap">🤖</div>
+          <div>
+            <h3>AI Performance Data</h3>
+            <div class="crisp-ai-month-row">
+              <span class="subtle">Month:</span>
+              ${monthSelector}
+            </div>
+          </div>
+        </div>
+        <button class="button primary" data-action="save-crisp-ai" data-month="${escapeHtml(monthKey)}">${icon('upload')} Save</button>
+      </div>
+      <div class="crisp-ai-form-body">
+        <div class="crisp-ai-form-section">
+          <div class="crisp-ai-section-label-row">
+            <span class="crisp-ai-section-label">⏱ Response Time</span>
+            <span class="crisp-ai-section-hint">format: HH:MM:SS</span>
+          </div>
+          <div class="crisp-ai-metric-grid">
+            <div class="crisp-ai-metric-card">
+              <div class="crisp-ai-metric-name">First Response Avg</div>
+              <div class="crisp-ai-metric-sub">AI + Human combined</div>
+              <input class="crisp-ai-time-input" type="text"
+                data-crisp-ai-field="firstResponseAvg"
+                data-ai-month="${escapeHtml(monthKey)}"
+                value="${escapeHtml(String(ai.firstResponseAvg || ''))}"
+                placeholder="00:00:00">
+            </div>
+            <div class="crisp-ai-metric-card">
+              <div class="crisp-ai-metric-name">Human First Response Avg</div>
+              <div class="crisp-ai-metric-sub">Human agent only</div>
+              <input class="crisp-ai-time-input" type="text"
+                data-crisp-ai-field="humanFirstResponseAvg"
+                data-ai-month="${escapeHtml(monthKey)}"
+                value="${escapeHtml(String(ai.humanFirstResponseAvg || ''))}"
+                placeholder="00:00:00">
+            </div>
+          </div>
+          ${aiSec !== null ? `
+            <div class="crisp-ai-derived-badge">
+              <span class="crisp-ai-derived-icon">🤖</span>
+              <span class="crisp-ai-derived-label">Avg. AI Response (calculated)</span>
+              <strong class="crisp-ai-derived-value">${escapeHtml(formatDurationSeconds(aiSec))}</strong>
+            </div>
+          ` : `
+            <div class="crisp-ai-derived-empty">
+              Fill both response time fields above to calculate Avg. AI Response.
+            </div>
+          `}
+        </div>
+        <div class="crisp-ai-form-section">
+          <div class="crisp-ai-section-label-row">
+            <span class="crisp-ai-section-label">💬 Chat Volume</span>
+          </div>
+          <div class="crisp-ai-metric-grid">
+            <div class="crisp-ai-metric-card">
+              <div class="crisp-ai-metric-name">Entry to Venio AI Chatbot</div>
+              <div class="crisp-ai-metric-sub">Conversations handled by AI</div>
+              <input class="crisp-ai-count-input" type="number" min="0"
+                data-crisp-ai-field="aiChatbotTotal"
+                data-ai-month="${escapeHtml(monthKey)}"
+                value="${escapeHtml(String(ai.aiChatbotTotal || ''))}"
+                placeholder="0">
+            </div>
+            <div class="crisp-ai-metric-card">
+              <div class="crisp-ai-metric-name">Entry Routed to Inbox</div>
+              <div class="crisp-ai-metric-sub">Conversations routed to human</div>
+              <input class="crisp-ai-count-input" type="number" min="0"
+                data-crisp-ai-field="inboxTotal"
+                data-ai-month="${escapeHtml(monthKey)}"
+                value="${escapeHtml(String(ai.inboxTotal || ''))}"
+                placeholder="0">
+            </div>
+          </div>
+        </div>
+        <div class="crisp-ai-form-section">
+          <div class="crisp-ai-section-label-row">
+            <span class="crisp-ai-section-label">📊 Topic Volume</span>
+            <button class="button crisp-ai-add-btn" type="button" data-action="add-crisp-topic" data-month="${escapeHtml(monthKey)}">+ Add Topic</button>
+          </div>
+          ${topics.length ? `
+            <div class="crisp-ai-topic-list">
+              ${topics.map((t, i) => `
+                <div class="crisp-ai-topic-row">
+                  <input class="crisp-ai-topic-name" type="text" placeholder="Topic name"
+                    data-crisp-topic-name="${i}" data-ai-month="${escapeHtml(monthKey)}"
+                    value="${escapeHtml(t.name || '')}">
+                  <input class="crisp-ai-topic-count" type="number" min="0" placeholder="Count"
+                    data-crisp-topic-count="${i}" data-ai-month="${escapeHtml(monthKey)}"
+                    value="${escapeHtml(String(t.count || ''))}">
+                  <button class="icon-button crisp-ai-topic-del" type="button"
+                    data-action="remove-crisp-topic" data-month="${escapeHtml(monthKey)}"
+                    data-index="${i}" aria-label="Remove">${icon('close')}</button>
+                </div>
+              `).join('')}
+            </div>
+          ` : `
+            <div class="crisp-ai-topic-empty">
+              <span>📋</span>
+              <p>No topics yet — click <strong>+ Add Topic</strong> to track conversation categories.</p>
+            </div>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+const CRISP_PIE_PASTEL = [
+  '#a8d4f0', '#c4b0e8', '#f5a8c0', '#a8dfc0', '#f5d8a0',
+  '#b8e8f5', '#f0c4a8', '#c4e0a8', '#e8b8d8', '#a8c8e8'
+];
+
+function crispPieLegendItems(segments, total) {
+  return segments.map((s) => {
+    const pct = total > 0 ? Math.round((s.value / total) * 100) : 0;
+    return `
+      <div class="crisp-legend-item">
+        <span class="crisp-legend-dot" style="background:${s.color}"></span>
+        <span class="crisp-legend-label">${escapeHtml(s.label)}</span>
+        <span class="crisp-legend-pct">${pct}%</span>
+        <strong class="crisp-legend-val">${s.value.toLocaleString()}</strong>
+      </div>`;
+  }).join('');
+}
+
+function crispAiChartsPanel(monthKey) {
+  if (!monthKey) return '';
+  const ai = crispAiForMonth(monthKey);
+  const topics = ai.topics ?? [];
+  const distSegments = [
+    { label: 'AI Chatbot', value: Number(ai.aiChatbotTotal) || 0, color: '#a8d4f0' },
+    { label: 'Routed to Inbox', value: Number(ai.inboxTotal) || 0, color: '#c4b0e8' }
+  ];
+  const topicSegments = topics
+    .map((t, i) => ({ label: t.name || `Topic ${i + 1}`, value: Number(t.count) || 0, color: CRISP_PIE_PASTEL[i % CRISP_PIE_PASTEL.length] }))
+    .filter((s) => s.value > 0);
+  const hasDistData = distSegments.some((s) => s.value > 0);
+  const distTotal = distSegments.reduce((sum, s) => sum + s.value, 0);
+  const topicTotal = topicSegments.reduce((sum, s) => sum + s.value, 0);
+  return `
+    <div class="crisp-ai-charts">
+      <section class="panel crisp-ai-chart-panel">
+        <div class="panel-title">
+          <h2>Chat Distribution</h2>
+          <span>${escapeHtml(periodLabel(monthKey))}</span>
+        </div>
+        <div class="crisp-pie-wrap">
+          ${crispPieChart(distSegments)}
+          <div class="crisp-pie-legend">
+            ${hasDistData
+              ? crispPieLegendItems(distSegments, distTotal)
+              : '<p class="crisp-pie-no-data">Enter chat volume in the Import tab.</p>'}
+          </div>
+        </div>
+      </section>
+      <section class="panel crisp-ai-chart-panel">
+        <div class="panel-title">
+          <h2>Topic Volume</h2>
+          <span>${topicSegments.length} topics</span>
+        </div>
+        <div class="crisp-pie-wrap">
+          ${crispPieChart(topicSegments)}
+          <div class="crisp-pie-legend">
+            ${topicSegments.length
+              ? crispPieLegendItems(topicSegments, topicTotal)
+              : '<p class="crisp-pie-no-data">Add topics in the Import tab.</p>'}
+          </div>
+        </div>
+      </section>
+    </div>
   `;
 }
 
 function crispMonthlyMovement(months, currentMonth) {
   const previousMonth = crispPreviousMonth(months, currentMonth?.month);
+  const aiSec = crispAiResponseSeconds(currentMonth?.month);
+  const prevAiSec = crispAiResponseSeconds(previousMonth?.month);
+  const aiDelta = crispDelta(aiSec, prevAiSec, 'response', true);
   return `
     <section class="crisp-trend-grid" aria-label="Month over month Crisp trends">
       ${crispMovementCard('Conversations', 'conversations', currentMonth, previousMonth)}
       ${crispMovementCard('Avg. Rating', 'rating', currentMonth, previousMonth)}
       ${crispMovementCard('Avg. Response', 'response', currentMonth, previousMonth, true)}
       ${crispMovementCard('Avg. Resolution', 'resolution', currentMonth, previousMonth, true)}
+      <article class="crisp-trend-card ${aiDelta.tone}">
+        <span>Avg. AI Response</span>
+        <strong>${aiSec !== null ? escapeHtml(formatDurationSeconds(aiSec)) : '-'}</strong>
+        <small>${escapeHtml(aiDelta.text)}${previousMonth ? ` from ${escapeHtml(periodLabel(previousMonth.month))}` : ''}</small>
+      </article>
     </section>
   `;
 }
@@ -2350,8 +2725,7 @@ function crispMonthlyComparison(months) {
   `;
 }
 
-function renderCrispImportView(latest) {
-  const month = state.crisp.selectedMonth || currentMonthKey();
+function renderCrispImportView(latest, activeMonth) {
   const latestMonth = latest?.month ?? latest?.imported_at?.slice(0, 7) ?? '';
   return `
     <section class="panel crisp-import-panel">
@@ -2361,12 +2735,7 @@ function renderCrispImportView(latest) {
         <p class="subtle">Choose the month this export belongs to. Importing the same month again replaces that month with the updated file.</p>
       </div>
       <div class="project-import-actions crisp-import-actions">
-        <label class="dashboard-control">
-          <span>Import month</span>
-          <input type="month" data-crisp-import-month value="${escapeHtml(month)}">
-        </label>
-        <input type="file" accept=".csv,text/csv" data-action="crisp-csv-file">
-        <button class="button primary" data-action="upload-crisp-csv">${icon('upload')} Import Crisp CSV</button>
+        <button class="button primary" data-action="open-upload-modal" data-type="crisp">${icon('upload')} Import Crisp CSV</button>
       </div>
       <div class="project-import-meta">
         ${latest ? `Latest: <strong>${escapeHtml(middleEllipsis(latest.filename, 36))}</strong> / ${escapeHtml(periodLabel(latestMonth))} / ${latest.valid_rows} operators / ${displayDate(latest.imported_at)}` : 'No Crisp CSV imported yet.'}
@@ -2380,7 +2749,7 @@ function renderCrispImportView(latest) {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Month</th><th>Imported</th><th>Filename</th><th>Operators</th><th>Skipped</th><th>Conversations</th><th>Avg Rating</th><th>Avg Response</th><th>Avg Resolution</th></tr></thead>
+          <thead><tr><th>Month</th><th>Imported</th><th>Filename</th><th>Operators</th><th>Skipped</th><th>Conversations</th><th>Avg Rating</th><th>Avg Response</th><th>Avg Resolution</th><th></th></tr></thead>
           <tbody>
             ${state.crisp.batches.map((batch) => `
               <tr>
@@ -2393,12 +2762,15 @@ function renderCrispImportView(latest) {
                 <td>${batch.avg_rating === null ? '-' : Number(batch.avg_rating).toFixed(2)}</td>
                 <td>${batch.avg_response_seconds === null ? '-' : formatDurationSeconds(batch.avg_response_seconds)}</td>
                 <td>${batch.avg_resolution_seconds === null ? '-' : formatDurationSeconds(batch.avg_resolution_seconds)}</td>
+                <td><button class="icon-button delete-batch-btn" data-action="delete-crisp-batch" data-batch-id="${batch.id}" title="Delete this month">${icon('close')}</button></td>
               </tr>
-            `).join('') || '<tr><td colspan="9" class="subtle">No imports yet.</td></tr>'}
+            `).join('') || '<tr><td colspan="10" class="subtle">No imports yet.</td></tr>'}
           </tbody>
         </table>
       </div>
     </section>
+
+    ${activeMonth ? crispAiFormPanel(activeMonth.month) : ''}
   `;
 }
 
@@ -2427,7 +2799,7 @@ function renderCrispPerformance() {
 
     ${crispViewTabs()}
 
-    ${state.crisp.activeView === 'import' ? renderCrispImportView(latest) : `
+    ${state.crisp.activeView === 'import' ? renderCrispImportView(latest, activeMonth) : `
       <section class="project-dashboard-toolbar crisp-month-toolbar">
         <div>
           <div class="section-label">Selected monthly snapshot</div>
@@ -2436,18 +2808,402 @@ function renderCrispPerformance() {
         ${months.length ? crispMonthPicker(months, activeMonth?.month ?? '') : '<span class="subtle">Import monthly Crisp data to begin comparison.</span>'}
       </section>
 
-      <section class="cards crisp-kpis">
-        ${card('Total Conversations', metrics.totalConversations, 'Selected month volume')}
-        ${card('Operators', operators.length, 'Selected month operators')}
-        ${card('Avg. Rating', metrics.avgRating === null ? '-' : metrics.avgRating.toFixed(2), 'Excludes 0 = no rating data')}
-        ${card('Rated Conversations', metrics.ratedConversations, 'Rows with rating data')}
-      </section>
-
       ${activeMonth ? crispMonthlyMovement(months, activeMonth) : ''}
-      ${crispTrendOverview(months, activeMonth?.month ?? '')}
-      ${crispMonthlyComparison(months)}
+      ${crispAiChartsPanel(activeMonth?.month ?? '')}
       ${crispOperatorTable(operators)}
     `}
+  `);
+}
+
+function meetingSummaryForMonth(monthKey) {
+  return state.meeting.summaryData[monthKey] ?? {
+    totalAttempts: '',
+    retraining: { lite: '', pro: '', proPlus: '' },
+    demo: { total: '', response: '', avgRating: '' },
+    expert: { total: '', response: '', avgRating: '' }
+  };
+}
+
+function meetingMomentsForMonth(monthKey) {
+  return (state.meeting.moments ?? []).filter((m) => m.month === monthKey);
+}
+
+function currentMeetingMonth() {
+  return state.meeting.selectedMonth || currentMonthKey();
+}
+
+async function compressMeetingImage(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 900;
+      let { width: w, height: h } = img;
+      if (w > MAX) { h = Math.round(h * MAX / w); w = MAX; }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.78));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+
+function updateMeetingPhotoSlot(slotIndex) {
+  const slot = app.querySelector(`[data-photo-slot="${slotIndex}"]`);
+  if (!slot) return;
+  const photo = _meetingEditPhotos[slotIndex];
+  if (photo) {
+    slot.classList.add('has-photo');
+    slot.innerHTML = `<img src="${photo}" alt="photo ${slotIndex + 1}"><button class="meeting-photo-clear" type="button" data-action="clear-meeting-photo" data-slot="${slotIndex}">&times;</button><input type="file" accept="image/*" class="meeting-photo-input" data-photo-file="${slotIndex}" style="display:none">`;
+  } else {
+    slot.classList.remove('has-photo');
+    slot.innerHTML = `<div class="meeting-photo-slot-empty"><span>&#8679;</span><small>Photo ${slotIndex + 1}</small></div><input type="file" accept="image/*" class="meeting-photo-input" data-photo-file="${slotIndex}" style="display:none">`;
+  }
+}
+
+function readAndSaveMeetingSummary(monthKey) {
+  const v = (sel) => app.querySelector(sel)?.value ?? '';
+  state.meeting.summaryData[monthKey] = {
+    totalAttempts: v('[data-meeting-field="totalAttempts"]'),
+    retraining: {
+      lite: v('[data-meeting-retraining="lite"]'),
+      pro: v('[data-meeting-retraining="pro"]'),
+      proPlus: v('[data-meeting-retraining="proPlus"]')
+    },
+    demo: { total: v('[data-meeting-demo="total"]'), response: v('[data-meeting-demo="response"]'), avgRating: v('[data-meeting-demo="avgRating"]') },
+    expert: { total: v('[data-meeting-expert="total"]'), response: v('[data-meeting-expert="response"]'), avgRating: v('[data-meeting-expert="avgRating"]') }
+  };
+}
+
+function meetingSummaryModal() {
+  if (!state.meeting.summaryModalOpen) return '';
+  const monthKey = currentMeetingMonth();
+  const s = meetingSummaryForMonth(monthKey);
+  const rt = s.retraining ?? {};
+  const dm = s.demo ?? {};
+  const ex = s.expert ?? {};
+  const field = (label, inputHtml) => `
+    <div class="meeting-modal-field">
+      <label class="meeting-modal-label">${escapeHtml(label)}</label>
+      ${inputHtml}
+    </div>`;
+  const numInput = (val, attr, placeholder = '0') =>
+    `<input type="number" min="0" class="meeting-text-input" ${attr} value="${escapeHtml(String(val ?? ''))}" placeholder="${placeholder}">`;
+  const textInput = (val, attr, placeholder = '') =>
+    `<input type="text" class="meeting-text-input" ${attr} value="${escapeHtml(String(val ?? ''))}" placeholder="${placeholder}">`;
+  return `
+    <div class="modal-backdrop meeting-summary-modal-backdrop" data-meeting-summary-modal-backdrop>
+      <article class="import-modal meeting-summary-modal">
+        <div class="import-modal-header">
+          <h2>Monthly Summary — ${escapeHtml(periodLabel(monthKey))}</h2>
+          <button class="icon-button" type="button" data-action="close-meeting-summary-modal" aria-label="Close">&times;</button>
+        </div>
+        <div class="meeting-modal-body">
+          <div class="meeting-summary-modal-section">
+            <div class="meeting-summary-modal-section-title">Total Attempts</div>
+            ${field('Number of Attempts', numInput(s.totalAttempts, 'data-meeting-field="totalAttempts"'))}
+          </div>
+          <div class="meeting-summary-modal-section">
+            <div class="meeting-summary-modal-section-title">Online : Re-Training</div>
+            <div class="meeting-modal-row">
+              ${field('Lite', numInput(rt.lite, 'data-meeting-retraining="lite"'))}
+              ${field('Pro', numInput(rt.pro, 'data-meeting-retraining="pro"'))}
+              ${field('Pro+', numInput(rt.proPlus, 'data-meeting-retraining="proPlus"'))}
+            </div>
+          </div>
+          <div class="meeting-summary-modal-section">
+            <div class="meeting-summary-modal-section-title">Demo</div>
+            <div class="meeting-modal-row">
+              ${field('Total Sessions', numInput(dm.total, 'data-meeting-demo="total"'))}
+              ${field('Response Count', numInput(dm.response, 'data-meeting-demo="response"'))}
+              ${field('Avg. Rating', textInput(dm.avgRating, 'data-meeting-demo="avgRating"', 'e.g. 4.5'))}
+            </div>
+          </div>
+          <div class="meeting-summary-modal-section">
+            <div class="meeting-summary-modal-section-title">Expert</div>
+            <div class="meeting-modal-row">
+              ${field('Total Sessions', numInput(ex.total, 'data-meeting-expert="total"'))}
+              ${field('Response Count', numInput(ex.response, 'data-meeting-expert="response"'))}
+              ${field('Avg. Rating', textInput(ex.avgRating, 'data-meeting-expert="avgRating"', 'e.g. 4.5'))}
+            </div>
+          </div>
+        </div>
+        <div class="import-modal-actions">
+          <button class="button ghost" type="button" data-action="close-meeting-summary-modal">Cancel</button>
+          <button class="button primary" type="button" data-action="save-meeting-summary" data-month="${escapeHtml(monthKey)}">&#8593; Save</button>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function meetingMomentModal() {
+  const isEdit = state.meeting.editingMomentId !== null;
+  if (!isEdit && !state.meeting.addMomentOpen) return '';
+  const moment = isEdit ? (state.meeting.moments ?? []).find((m) => m.id === state.meeting.editingMomentId) : null;
+  return `
+    <div class="modal-backdrop meeting-modal-backdrop" data-meeting-modal-backdrop>
+      <article class="import-modal meeting-modal">
+        <div class="import-modal-header">
+          <h2>${isEdit ? 'Edit Moment' : 'Add On-site Moment'}</h2>
+          <button class="icon-button" type="button" data-action="close-meeting-modal" aria-label="Close">&times;</button>
+        </div>
+        <div class="meeting-modal-body">
+          <div class="meeting-modal-field">
+            <label class="meeting-modal-label">Company Name</label>
+            <input type="text" class="meeting-text-input" data-meeting-modal-field="companyName" value="${escapeHtml(moment?.companyName || '')}" placeholder="บริษัท XXX จำกัด">
+          </div>
+          <div class="meeting-modal-row">
+            <div class="meeting-modal-field">
+              <label class="meeting-modal-label">Activity Type</label>
+              <input type="text" class="meeting-text-input" data-meeting-modal-field="activityType" value="${escapeHtml(moment?.activityType || '')}" placeholder="e.g. On-site Training">
+            </div>
+            <div class="meeting-modal-field">
+              <label class="meeting-modal-label">Activity Name</label>
+              <input type="text" class="meeting-text-input" data-meeting-modal-field="activityName" value="${escapeHtml(moment?.activityName || '')}" placeholder="e.g. Pro+ / IMP / 28 Users">
+            </div>
+          </div>
+          <div class="meeting-modal-field" style="max-width:220px">
+            <label class="meeting-modal-label">Date</label>
+            <input type="date" class="meeting-text-input" data-meeting-modal-field="date" value="${escapeHtml(moment?.date || '')}">
+          </div>
+          <div class="meeting-modal-field">
+            <label class="meeting-modal-label">Photos <span class="subtle">(max 2) — click slot, or Ctrl+V to paste</span></label>
+            <div class="meeting-photo-slots">
+              ${[0, 1].map((i) => {
+                const photo = _meetingEditPhotos[i];
+                return `<div class="meeting-photo-slot${photo ? ' has-photo' : ''}" data-photo-slot="${i}">${photo ? `<img src="${photo}" alt="photo ${i + 1}"><button class="meeting-photo-clear" type="button" data-action="clear-meeting-photo" data-slot="${i}">&times;</button>` : `<div class="meeting-photo-slot-empty"><span>&#8679;</span><small>Photo ${i + 1}</small></div>`}<input type="file" accept="image/*" class="meeting-photo-input" data-photo-file="${i}" style="display:none"></div>`;
+              }).join('')}
+            </div>
+          </div>
+        </div>
+        <div class="import-modal-actions">
+          ${isEdit ? `<button class="button ghost meeting-delete-btn" type="button" data-action="delete-meeting-moment" data-moment-id="${moment.id}">Delete</button>` : ''}
+          <button class="button ghost" type="button" data-action="close-meeting-modal">Cancel</button>
+          <button class="button primary" type="button" data-action="save-meeting-moment" data-month="${escapeHtml(currentMeetingMonth())}">Save</button>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function meetingMetricCard(title, bodyHtml) {
+  return `<div class="meeting-card"><div class="meeting-card-title">${escapeHtml(title)}</div><div class="meeting-card-body">${bodyHtml}</div></div>`;
+}
+
+function meetingMomentCard(m) {
+  const photos = m.photos ?? [];
+  return `
+    <div class="meeting-moment-card">
+      <div class="meeting-moment-card-header">
+        <strong class="meeting-moment-company">${escapeHtml(m.companyName || 'Company')}</strong>
+        <button class="icon-button" type="button" data-action="edit-meeting-moment" data-moment-id="${m.id}" title="Edit">&#9998;</button>
+      </div>
+      <div class="meeting-moment-activity">${escapeHtml([m.activityType, m.activityName].filter(Boolean).join(' : '))}</div>
+      <div class="meeting-moment-photos">
+        ${photos.map((p) => `<div class="meeting-moment-photo"><img src="${p}" alt=""></div>`).join('')}
+        ${Array(Math.max(0, 2 - photos.length)).fill('<div class="meeting-moment-photo empty"></div>').join('')}
+      </div>
+      <div class="meeting-moment-date">${escapeHtml(m.date ? formatDate(m.date) : '')}</div>
+    </div>
+  `;
+}
+
+function renderMeeting() {
+  const monthKey = currentMeetingMonth();
+  const summary = meetingSummaryForMonth(monthKey);
+  const retraining = summary.retraining ?? {};
+  const retrainingTotal = (Number(retraining.lite) || 0) + (Number(retraining.pro) || 0) + (Number(retraining.proPlus) || 0);
+  const demo = summary.demo ?? {};
+  const expert = summary.expert ?? {};
+  const moments = meetingMomentsForMonth(monthKey);
+
+  return renderShell(`
+    <div class="project-hero-banner">
+      <div class="project-hero-text">
+        <div class="project-hero-title">Venio Meeting</div>
+        <div class="project-hero-date">${escapeHtml(periodLabel(monthKey))}</div>
+      </div>
+      <div class="project-hero-mascot">
+        <img src="/assets/robot-mascot.png" alt="Team mascot" onerror="this.replaceWith(document.createTextNode('🤖'))">
+      </div>
+    </div>
+
+    <div class="meeting-summary-toolbar">
+      <label class="meeting-month-picker-wrap">
+        <span>Month</span>
+        <input type="month" class="meeting-month-input" value="${escapeHtml(monthKey)}" data-meeting-month>
+      </label>
+      <button class="button primary" type="button" data-action="open-meeting-summary-modal">&#9998; Add Summary</button>
+    </div>
+
+    <div class="meeting-summary-grid">
+      ${meetingMetricCard('Total Attempts', `
+        <div class="meeting-big-num">${Number(summary.totalAttempts) || 0}</div>
+      `)}
+      ${meetingMetricCard('Online : Re-Training', `
+        <div class="meeting-retraining-top">
+          <div><span class="meeting-retraining-total-label">Total</span><div class="meeting-big-num retraining">${retrainingTotal}</div></div>
+        </div>
+        <div class="meeting-retraining-breakdown">
+          ${[['lite','Lite'],['pro','Pro'],['proPlus','Pro+']].map(([k,lbl]) => `<div class="meeting-retraining-row"><span>${escapeHtml(lbl)} :</span><strong>${Number(retraining[k]) || 0}</strong></div>`).join('')}
+        </div>
+      `)}
+      ${meetingMetricCard('Demo', `
+        <div class="meeting-big-num">${Number(demo.total) || 0}</div>
+        <div class="meeting-card-footer">
+          <div class="meeting-footer-row"><span>Response :</span><strong>${Number(demo.response) || 0}</strong></div>
+          <div class="meeting-footer-row"><span>Avg.Rating :</span><strong>${escapeHtml(String(demo.avgRating || '-'))}</strong></div>
+        </div>
+      `)}
+      ${meetingMetricCard('Expert', `
+        <div class="meeting-big-num">${Number(expert.total) || 0}</div>
+        <div class="meeting-card-footer">
+          <div class="meeting-footer-row"><span>Response :</span><strong>${Number(expert.response) || 0}</strong></div>
+          <div class="meeting-footer-row"><span>Avg.Rating :</span><strong>${escapeHtml(String(expert.avgRating || '-'))}</strong></div>
+        </div>
+      `)}
+    </div>
+
+    <section class="panel meeting-moments-section">
+      <div class="meeting-moments-header">
+        <div class="meeting-moments-title">
+          <span class="meeting-moments-icon">&#128247;</span>
+          <h2>On-site Capture Moment</h2>
+        </div>
+        <button class="meeting-add-btn" type="button" data-action="add-meeting-moment" data-month="${escapeHtml(monthKey)}">+</button>
+      </div>
+      <div class="meeting-moments-grid">
+        ${moments.length ? moments.map((m) => meetingMomentCard(m)).join('') : '<div class="meeting-moments-empty subtle">No moments yet for this month. Click + to add.</div>'}
+      </div>
+    </section>
+
+    ${meetingSummaryModal()}
+    ${meetingMomentModal()}
+  `);
+}
+
+function currentManualMonth() {
+  return state.manual.selectedMonth || currentMonthKey();
+}
+
+function manualEntriesForMonth(monthKey) {
+  return (state.manual.entries ?? []).filter((e) => e.month === monthKey);
+}
+
+function manualMetrics(entries) {
+  return {
+    total: entries.length,
+    newArticle: entries.filter((e) => e.type === 'New Article').length,
+    improvement: entries.filter((e) => e.type === 'Improvement').length,
+    video: entries.filter((e) => e.type === 'Video').length
+  };
+}
+
+function manualModal() {
+  const isEdit = state.manual.editingEntryId !== null;
+  if (!isEdit && !state.manual.addModalOpen) return '';
+  const entry = isEdit ? (state.manual.entries ?? []).find((e) => e.id === state.manual.editingEntryId) : null;
+  const typeOptions = ['New Article', 'Improvement', 'Video'];
+  return `
+    <div class="modal-backdrop manual-modal-backdrop" data-manual-modal-backdrop>
+      <article class="manual-modal">
+        <div class="manual-modal-header">
+          <h2>New Venio Manual</h2>
+        </div>
+        <div class="manual-modal-body">
+          <div class="manual-modal-section-label">+ ADD</div>
+          <input type="text" class="manual-text-input" data-manual-field="topic" value="${escapeHtml(entry?.topic || '')}" placeholder="Topic*" required>
+          <div class="manual-url-wrap">
+            <span class="manual-url-icon">&#128279;</span>
+            <input type="url" class="manual-text-input manual-url-input" data-manual-field="url" value="${escapeHtml(entry?.url || '')}" placeholder="URL Link">
+          </div>
+          <div class="manual-modal-bottom-row">
+            <select class="manual-select" data-manual-field="type">
+              <option value="" ${!entry?.type ? 'selected' : ''} disabled>Type &#9660;</option>
+              ${typeOptions.map((t) => `<option value="${escapeHtml(t)}" ${entry?.type === t ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}
+            </select>
+            <input type="date" class="manual-select" data-manual-field="date" value="${escapeHtml(entry?.date || '')}">
+            <button class="button ghost manual-cancel-btn" type="button" data-action="close-manual-modal">ยกเลิก</button>
+            <button class="button primary manual-save-btn" type="button" data-action="save-manual-entry" data-month="${escapeHtml(currentManualMonth())}">เสร็จสิ้น</button>
+          </div>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function renderManual() {
+  const monthKey = currentManualMonth();
+  const entries = manualEntriesForMonth(monthKey);
+  const m = manualMetrics(entries);
+
+  const metricCard = (label, value) => `
+    <div class="manual-metric-card">
+      <div class="manual-metric-label">${escapeHtml(label)}</div>
+      <div class="manual-metric-value">${value}</div>
+    </div>`;
+
+  const typeColor = { 'New Article': 'manual-type-article', 'Improvement': 'manual-type-improve', 'Video': 'manual-type-video' };
+
+  return renderShell(`
+    <div class="project-hero-banner">
+      <div class="project-hero-text">
+        <div class="project-hero-title">Venio Manual</div>
+        <div class="project-hero-date">${escapeHtml(periodLabel(monthKey))}</div>
+      </div>
+      <div class="project-hero-mascot">
+        <img src="/assets/robot-mascot.png" alt="mascot" onerror="this.replaceWith(document.createTextNode('&#129302;'))">
+      </div>
+    </div>
+
+    <div class="manual-toolbar">
+      <label class="meeting-month-picker-wrap">
+        <span>Month</span>
+        <input type="month" class="meeting-month-input" value="${escapeHtml(monthKey)}" data-manual-month>
+      </label>
+      <button class="button primary" type="button" data-action="add-manual-entry">+ Add</button>
+    </div>
+
+    <div class="manual-metrics-grid">
+      ${metricCard('Total', m.total)}
+      ${metricCard('New Article', m.newArticle)}
+      ${metricCard('Improvement', m.improvement)}
+      ${metricCard('Video', m.video)}
+    </div>
+
+    <section class="panel manual-table-section">
+      <table class="manual-table">
+        <thead>
+          <tr>
+            <th class="manual-th-topic">Topic</th>
+            <th class="manual-th-type">Type</th>
+            <th class="manual-th-date">Date</th>
+            ${state.manual.editMode ? '<th class="manual-th-actions"></th>' : ''}
+          </tr>
+        </thead>
+        <tbody>
+          ${entries.length ? entries.map((e) => `
+            <tr class="manual-row">
+              <td>${e.url ? `<a href="${escapeHtml(e.url)}" target="_blank" rel="noopener" class="manual-topic-link">${escapeHtml(e.topic)}</a>` : escapeHtml(e.topic)}</td>
+              <td><span class="manual-type-pill ${typeColor[e.type] ?? ''}">${escapeHtml(e.type)}</span></td>
+              <td class="manual-date-cell">${escapeHtml(e.date ? formatDate(e.date) : '')}</td>
+              ${state.manual.editMode ? `<td class="manual-actions-cell"><button class="icon-button" data-action="edit-manual-entry" data-entry-id="${e.id}" title="Edit">&#9998;</button><button class="icon-button manual-delete-btn" data-action="delete-manual-entry" data-entry-id="${e.id}" title="Delete">&times;</button></td>` : ''}
+            </tr>
+          `).join('') : `<tr><td colspan="${state.manual.editMode ? 4 : 3}" class="manual-empty">No entries for this month.</td></tr>`}
+        </tbody>
+      </table>
+    </section>
+
+    <div class="manual-fab-row">
+      <button class="manual-fab" type="button" data-action="add-manual-entry" title="Add entry">+</button>
+      <button class="manual-fab manual-fab-edit ${state.manual.editMode ? 'active' : ''}" type="button" data-action="toggle-manual-edit" title="Edit mode">&#9998;</button>
+    </div>
+
+    ${manualModal()}
   `);
 }
 
@@ -2542,6 +3298,156 @@ function trendSvg(data) {
         return `<circle cx="${x}" cy="${y}" r="5" tabindex="0" aria-label="${escapeHtml(`${periodLabel(key)}: ${value} issues`)}"><title>${escapeHtml(periodLabel(key))}: ${value} issues</title></circle>`;
       }).join('')}
     </svg>
+  `;
+}
+
+function projectAddImportModal() {
+  if (!state.projectTracking.importModal) return '';
+  const latest = state.projectTrackingBatches[0];
+  const packageEmoji = { Lite: '⭐', Pro: '🌟', 'Pro+': '💫' };
+  return `
+    <div class="modal-backdrop import-modal-backdrop" data-project-import-backdrop>
+      <article class="import-modal">
+        <div class="import-modal-header">
+          <h2>Import Data</h2>
+          <button class="icon-button" type="button" data-action="close-project-import-modal" aria-label="Close">${icon('close')}</button>
+        </div>
+        <div class="import-modal-body">
+          <div class="import-modal-left">
+            <div class="import-modal-section-label">+ ADD</div>
+            <div class="import-add-form" data-project-add-form>
+              <input class="import-field-input" type="text" data-add-field="customer_name" placeholder="Customer Name*">
+              <div class="import-field-row">
+                <div class="import-select-wrap">
+                  <select class="import-field-select" data-add-field="package_type">
+                    ${['Lite', 'Pro', 'Pro+'].map((p) => `<option value="${p}">${packageEmoji[p] ?? ''} ${p}</option>`).join('')}
+                  </select>
+                </div>
+                <input class="import-field-input" type="number" min="0" data-add-field="user_count" placeholder="User">
+              </div>
+              <div class="import-date-list">
+                <div class="import-date-row">
+                  <span class="import-date-label">Kick-Off</span>
+                  <div class="import-date-input-wrap">
+                    <input class="import-field-date" type="date" data-add-field="kickoff_date">
+                  </div>
+                </div>
+                <div class="import-date-row">
+                  <span class="import-date-label">Onboarding</span>
+                  <div class="import-date-input-wrap">
+                    <input class="import-field-date" type="date" data-add-field="onboarding_date">
+                  </div>
+                </div>
+                <div class="import-date-row">
+                  <span class="import-date-label">Training</span>
+                  <div class="import-date-input-wrap">
+                    <input class="import-field-date" type="date" data-add-field="training_date">
+                  </div>
+                </div>
+                <div class="import-date-row">
+                  <span class="import-date-label">Golive</span>
+                  <div class="import-date-input-wrap">
+                    <input class="import-field-date" type="date" data-add-field="golive_date">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="import-modal-divider"></div>
+          <div class="import-modal-right">
+            <div class="import-modal-section-label">Import File .CSV</div>
+            <label class="import-drop-zone" for="project-xlsx-input">
+              <div class="import-drop-icon">${icon('upload')}</div>
+              <span>Drop file / Select file</span>
+              <input id="project-xlsx-input" type="file" accept=".xlsx" data-action="project-xlsx-file" style="display:none">
+            </label>
+            <p class="import-drop-note subtle">
+              ${latest ? `Latest: <strong>${escapeHtml(middleEllipsis(latest.filename, 28))}</strong> · ${latest.valid_rows} projects` : 'No project workbook imported yet.'}
+            </p>
+            <button class="button primary import-xlsx-btn" type="button" data-action="upload-project-xlsx">${icon('upload')} Import Excel</button>
+            ${state.projectTrackingBatches.length ? `
+              <div class="import-batch-history">
+                <div class="import-modal-section-label" style="margin-top:16px;margin-bottom:8px">Import History</div>
+                ${state.projectTrackingBatches.map((b) => `
+                  <div class="import-batch-row">
+                    <div class="import-batch-info">
+                      <strong>${escapeHtml(middleEllipsis(b.filename, 24))}</strong>
+                      <span>${b.valid_rows} projects · ${displayDate(b.imported_at)}</span>
+                    </div>
+                    <button class="icon-button delete-batch-btn" data-action="delete-project-batch" data-batch-id="${b.id}" title="Delete this import">${icon('close')}</button>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+        <div class="import-modal-actions">
+          <button class="button ghost" type="button" data-action="close-project-import-modal">ยกเลิก</button>
+          <button class="button primary" type="button" data-action="submit-add-project">เสร็จสิ้น</button>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function genericUploadModal() {
+  if (!state.uploadModal) return '';
+  const config = {
+    venio: {
+      title: 'Import Venio CSV',
+      note: 'Prepared dashboard CSV with Report Date, Last Updated Date, Resolved Date, Time to Solve, and Pending Age columns.',
+      accept: '.csv,text/csv',
+      action: 'csv-file',
+      submit: 'upload-csv',
+      btnLabel: 'Upload CSV'
+    },
+    jira: {
+      title: 'Import Jira CSV',
+      note: 'Raw Jira export CSV. The app calculates Report Date, Last Updated Date, Resolved Date, Time to Solve, and Pending Age automatically.',
+      accept: '.csv,text/csv',
+      action: 'jira-file',
+      submit: 'upload-jira-csv',
+      btnLabel: 'Import Jira CSV'
+    },
+    crisp: {
+      title: 'Import Crisp CSV',
+      note: 'Monthly Crisp operator analytics export. Importing the same month again replaces that month.',
+      accept: '.csv,text/csv',
+      action: 'crisp-csv-file',
+      submit: 'upload-crisp-csv',
+      btnLabel: 'Import Crisp CSV',
+      extra: `<label class="import-month-label"><span>Month</span><input type="month" data-crisp-import-month value="${escapeHtml(state.crisp.selectedMonth || currentMonthKey())}"></label>`
+    }
+  };
+  const c = config[state.uploadModal];
+  if (!c) return '';
+  return `
+    <div class="modal-backdrop import-modal-backdrop" data-upload-modal-backdrop>
+      <article class="import-modal import-modal-single">
+        <div class="import-modal-header">
+          <h2>${escapeHtml(c.title)}</h2>
+          <button class="icon-button" type="button" data-action="close-upload-modal" aria-label="Close">${icon('close')}</button>
+        </div>
+        <div class="import-modal-body import-modal-body-single">
+          <div class="import-modal-right" style="flex:1">
+            <label class="import-drop-zone${state.uploadSelectedFiles.length ? ' has-file' : ''}" for="generic-upload-input-${state.uploadModal}">
+              <div class="import-drop-icon" style="${state.uploadSelectedFiles.length ? 'color:#1a7a40' : ''}">
+                ${state.uploadSelectedFiles.length ? '&#10003;' : icon('upload')}
+              </div>
+              <span>${state.uploadSelectedFiles.length ? escapeHtml(state.uploadSelectedFiles.join(', ')) : 'Drop file / Select file'}</span>
+              <input id="generic-upload-input-${state.uploadModal}" type="file" accept="${c.accept}" data-action="${c.action}" style="display:none" multiple>
+            </label>
+            <p class="import-drop-note subtle">${escapeHtml(c.note)}</p>
+            ${c.extra ?? ''}
+          </div>
+        </div>
+        ${state.uploadResult ? `<div class="import-result import-result-${state.uploadResult.type}">${escapeHtml(state.uploadResult.message)}</div>` : ''}
+        <div class="import-modal-actions">
+          <button class="button ghost" type="button" data-action="close-upload-modal">ยกเลิก</button>
+          <button class="button primary" type="button" data-action="${c.submit}" ${state.uploadLoading ? 'disabled' : ''}>${state.uploadLoading ? `&#8987; Importing…` : `${icon('upload')} ${escapeHtml(c.btnLabel)}`}</button>
+        </div>
+      </article>
+    </div>
   `;
 }
 
@@ -3117,8 +4023,7 @@ function renderUpload() {
           <div>
             <h2>Select Prepared Dashboard CSV</h2>
             <p class="subtle">Use this page when your file already has Report Date, Last Updated Date, Resolved Date, Time to Solve, and Pending Age columns.</p>
-            <p><input type="file" accept=".csv,text/csv" data-action="csv-file" multiple></p>
-            <button class="button primary" data-action="upload-csv">Upload CSV Files</button>
+            <button class="button primary" data-action="open-upload-modal" data-type="venio">${icon('upload')} Import CSV Files</button>
           </div>
         </div>
       </div>
@@ -3164,8 +4069,7 @@ function renderJiraUpload() {
           <div>
             <h2>Select Raw Jira CSV</h2>
             <p class="subtle">Use this page for files like Jira_Venio_April.csv and Jira_Venio_May.csv.</p>
-            <p><input type="file" accept=".csv,text/csv" data-action="jira-file" multiple></p>
-            <button class="button primary" data-action="upload-jira-csv">Import Jira CSV Files</button>
+            <button class="button primary" data-action="open-upload-modal" data-type="jira">${icon('upload')} Import Jira CSV Files</button>
           </div>
         </div>
       </div>
@@ -3219,7 +4123,7 @@ function historyTable() {
   return `
     <div class="table-wrap" style="margin-top:10px">
       <table>
-        <thead><tr><th>Imported</th><th>Filename</th><th>Total</th><th>Valid</th><th>Skipped</th><th>Duplicates</th><th>Report Range</th></tr></thead>
+        <thead><tr><th>Imported</th><th>Filename</th><th>Total</th><th>Valid</th><th>Skipped</th><th>Duplicates</th><th>Report Range</th><th></th></tr></thead>
         <tbody>
           ${state.batches.map((batch) => `
             <tr>
@@ -3230,6 +4134,7 @@ function historyTable() {
               <td>${batch.skipped_rows}</td>
               <td>${batch.duplicate_count}</td>
               <td>${formatDate(batch.min_report_date)} - ${formatDate(batch.max_report_date)}</td>
+              <td><button class="icon-button delete-batch-btn" data-action="delete-issue-batch" data-batch-id="${batch.id}" title="Delete this import">${icon('close')}</button></td>
             </tr>
           `).join('')}
         </tbody>
@@ -3249,7 +4154,6 @@ function renderSettings() {
           ${settingInput('pending_critical_hours', 'Pending Critical Hours')}
           ${settingInput('solve_warning_hours', 'Time to Solve Warning Hours')}
           ${settingInput('solve_critical_hours', 'Time to Solve Critical Hours')}
-          <label class="inline"><input type="checkbox" data-setting="dark_mode" ${state.settings.dark_mode === 'true' ? 'checked' : ''}> Dark mode</label>
           <button class="button primary" data-action="save-settings">Save Settings</button>
         </div>
       </div>
@@ -3486,45 +4390,6 @@ function projectEditModal() {
   `;
 }
 
-function authModal() {
-  if (!state.auth.modal) return '';
-  const isRegister = state.auth.modal === 'register';
-  return `
-    <div class="modal-backdrop auth-backdrop" data-auth-backdrop>
-      <article class="modal auth-modal">
-        <div class="modal-head">
-          <div>
-            <div class="section-label">Account</div>
-            <h2>${isRegister ? 'Register' : 'Sign in'}</h2>
-            <div class="modal-meta">
-              <span>Simple workspace login</span>
-              <span>One dataset per user</span>
-            </div>
-          </div>
-          <button class="icon-button modal-close" type="button" aria-label="Close account popup" data-action="close-auth">${icon('close')}</button>
-        </div>
-        <div class="modal-body auth-body">
-          <label>
-            <span>Username</span>
-            <input data-auth-field="username" autocomplete="username" placeholder="your name" value="${escapeHtml(state.auth.draft.username)}">
-          </label>
-          <label>
-            <span>Password</span>
-            <input data-auth-field="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" placeholder="simple password" value="${escapeHtml(state.auth.draft.password)}">
-          </label>
-          <button class="button primary" data-action="auth-submit" data-mode="${state.auth.modal}">
-            ${isRegister ? 'Create Account' : 'Sign In'}
-          </button>
-          <button class="button ghost" data-action="open-auth" data-mode="${isRegister ? 'signin' : 'register'}">
-            ${isRegister ? 'I already have an account' : 'Create a new account'}
-          </button>
-          <p class="subtle">This is intentionally simple. Use a normal shared password only for low-risk dashboard data.</p>
-        </div>
-      </article>
-    </div>
-  `;
-}
-
 function modal() {
   const issue = state.issues.find((item) => item.id === state.selectedIssueId);
   if (!issue) return '';
@@ -3614,14 +4479,34 @@ function modal() {
   `;
 }
 
-function render() {
-  document.body.classList.toggle('dark', state.settings.dark_mode === 'true');
-  if (!state.auth.user) {
-    document.title = 'Customer Service Team Hub';
-    state.view = 'home';
-    app.innerHTML = renderLanding();
-    return;
+const VALID_VIEWS = new Set(['home', 'project-dashboard', 'crisp-performance', 'upload', 'jira-upload', 'dashboard', 'board', 'table', 'settings']);
+
+function getViewFromHash() {
+  const hash = window.location.hash.slice(1);
+  return VALID_VIEWS.has(hash) ? hash : 'home';
+}
+
+function pushViewHash(view) {
+  const target = `#${view}`;
+  if (window.location.hash !== target) {
+    history.pushState(null, '', target);
   }
+}
+
+function renderPreservingScroll() {
+  const main = document.querySelector('.main');
+  const savedTop = main ? main.scrollTop : 0;
+  render();
+  if (savedTop > 0) {
+    requestAnimationFrame(() => {
+      const newMain = document.querySelector('.main');
+      if (newMain) newMain.scrollTop = savedTop;
+    });
+  }
+}
+
+function render() {
+  _filteredCache = null;
   const titles = {
     home: 'Customer Service Team Hub',
     'project-dashboard': 'Project Dashboard | Customer Service Team Hub',
@@ -3631,11 +4516,14 @@ function render() {
     dashboard: 'Venio Issue Dashboard | Customer Service Team Hub',
     board: 'Venio Issue Board | Customer Service Team Hub',
     table: 'Venio Issue Table | Customer Service Team Hub',
-    settings: 'Venio Issue Settings | Customer Service Team Hub'
+    settings: 'Venio Issue Settings | Customer Service Team Hub',
+    'meeting': 'Venio Meeting | Customer Service Team Hub',
+    'manual': 'Venio Manual | Customer Service Team Hub'
   };
   document.title = titles[state.view] ?? 'Customer Service Team Hub';
   const favicon = document.querySelector('#favicon');
   if (favicon) favicon.href = brandAssets.venio;
+  pushViewHash(state.view);
   const views = {
     home: renderLanding,
     'project-dashboard': renderProjectDashboard,
@@ -3645,18 +4533,30 @@ function render() {
     dashboard: renderExecutiveDashboard,
     board: renderBoard,
     table: renderTable,
-    settings: renderSettings
+    settings: renderSettings,
+    'meeting': renderMeeting,
+    'manual': renderManual
   };
+
+  const focusedFilter = document.activeElement?.dataset?.filter;
+  const focusCursor = document.activeElement?.selectionStart;
+
   state.lastShellHtml = (views[state.view] ?? renderLanding)();
   app.innerHTML = state.lastShellHtml;
+
+  if (focusedFilter) {
+    const el = app.querySelector(`[data-filter="${focusedFilter}"]`);
+    if (el) {
+      el.focus();
+      if (focusCursor != null && typeof el.setSelectionRange === 'function') {
+        try { el.setSelectionRange(focusCursor, focusCursor); } catch (_) {}
+      }
+    }
+  }
 }
 
 function renderOverlayOnly() {
-  if (!state.auth.user) {
-    render();
-    return;
-  }
-  const modalHtml = `${modal()}${projectEditModal()}${projectImportModal()}`;
+  const modalHtml = `${modal()}${projectEditModal()}${projectImportModal()}${projectAddImportModal()}${genericUploadModal()}`;
   const toastHtml = state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : '';
   const existingModal = app.querySelectorAll('.modal-backdrop');
   const existingToast = app.querySelector('.toast');
@@ -3734,25 +4634,7 @@ async function loadDemoSeed() {
 }
 
 function currentStorageKey() {
-  return state.auth.user?.username
-    ? `${STORAGE_KEY}:user:${state.auth.user.username}`
-    : STORAGE_KEY;
-}
-
-async function saveRemoteStore(store) {
-  if (!state.auth.token) return;
-  try {
-    await fetch('/api/user-store', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${state.auth.token}`
-      },
-      body: JSON.stringify({ data: store })
-    });
-  } catch {
-    // Browser storage remains the local draft if the network is unavailable.
-  }
+  return STORAGE_KEY;
 }
 
 function createDefaultStore(seed = {}) {
@@ -3829,7 +4711,6 @@ function hasWorkspaceContent(store) {
 
 function saveClientStore(store) {
   localStorage.setItem(currentStorageKey(), JSON.stringify(store));
-  void saveRemoteStore(store);
 }
 
 function normalizeCrispMonthEntry(entry) {
@@ -4235,45 +5116,7 @@ async function clientApi(path, options = {}) {
   const method = options.method ?? 'GET';
   const body = options.body ? JSON.parse(options.body) : {};
 
-  if (method === 'GET' && path === '/api/auth/me') {
-    if (!state.auth.user || !state.auth.token) throw new Error('Not signed in.');
-    return { user: state.auth.user, token: state.auth.token };
-  }
-
-  if (method === 'POST' && path === '/api/auth/register') {
-    const users = loadClientUsers();
-    const username = norm(body.username).toLowerCase();
-    const password = String(body.password ?? '');
-    if (username.length < 2) throw new Error('Username must be at least 2 characters.');
-    if (password.length < 3) throw new Error('Password must be at least 3 characters.');
-    if (users[username]) throw new Error('Username already exists.');
-    const user = { id: `local-${Date.now()}`, username };
-    users[username] = { ...user, password };
-    saveClientUsers(users);
-    return { user, token: clientTokenForUser(user) };
-  }
-
-  if (method === 'POST' && path === '/api/auth/login') {
-    const users = loadClientUsers();
-    const username = norm(body.username).toLowerCase();
-    const found = users[username];
-    if (!found || found.password !== String(body.password ?? '')) throw new Error('Invalid username or password.');
-    const user = { id: found.id, username: found.username };
-    return { user, token: clientTokenForUser(user) };
-  }
-
-  if (method === 'GET' && path === '/api/user-store') {
-    if (!state.auth.user) throw new Error('Sign in required.');
-    return { data: loadClientStore(await loadDemoSeed()) };
-  }
-
-  if (method === 'PUT' && path === '/api/user-store') {
-    if (!state.auth.user) throw new Error('Sign in required.');
-    localStorage.setItem(currentStorageKey(), JSON.stringify(body.data ?? {}));
-    return { ok: true };
-  }
-
-  const store = loadClientStore(state.auth.user ? {} : await loadDemoSeed());
+  const store = loadClientStore(await loadDemoSeed());
 
   if (method === 'GET' && path === '/api/bootstrap') return clientBootstrap(store);
   if (method === 'POST' && path === '/api/import') return importClientCsv(body.filename ?? 'upload.csv', body.content ?? '');
@@ -4388,16 +5231,16 @@ async function clientApi(path, options = {}) {
       {
         id: createdProjectId,
         source_key: `manual-${Date.now()}`,
-        customer_name: null,
-        project_name: null,
-        package_type: 'Pro',
-        user_count: 0,
+        customer_name: body?.customer_name || null,
+        project_name: body?.customer_name || null,
+        package_type: body?.package_type || 'Pro',
+        user_count: Number(body?.user_count) || 0,
         source_status: 'Manual',
         stage: 'Kick-off',
-        kickoff_date: isoDate(new Date()),
-        onboarding_date: null,
-        training_date: null,
-        golive_date: null,
+        kickoff_date: body?.kickoff_date || isoDate(new Date()),
+        onboarding_date: body?.onboarding_date || null,
+        training_date: body?.training_date || null,
+        golive_date: body?.golive_date || null,
         notes: null,
         timeline_info: null,
         created_at: now,
@@ -4439,102 +5282,166 @@ async function clientApi(path, options = {}) {
     return clientBootstrap(store);
   }
 
+  const issueBatchDeleteMatch = path.match(/^\/api\/batches\/(\d+)$/);
+  if (method === 'DELETE' && issueBatchDeleteMatch) {
+    const batchId = Number(issueBatchDeleteMatch[1]);
+    store.issues = (store.issues ?? []).filter((i) => i.import_batch_id !== batchId);
+    store.batches = (store.batches ?? []).filter((b) => b.id !== batchId);
+    saveClientStore(store);
+    return clientBootstrap(store);
+  }
+
+  const crispBatchDeleteMatch = path.match(/^\/api\/crisp\/batches\/(\d+)$/);
+  if (method === 'DELETE' && crispBatchDeleteMatch) {
+    const batchId = Number(crispBatchDeleteMatch[1]);
+    const deletedBatch = (store.crispBatches ?? []).find((b) => b.id === batchId);
+    store.crispBatches = (store.crispBatches ?? []).filter((b) => b.id !== batchId);
+    if (deletedBatch?.month) {
+      store.crispMonths = (store.crispMonths ?? []).filter((m) => m.month !== deletedBatch.month);
+    }
+    saveClientStore(store);
+    return clientBootstrap(store);
+  }
+
+  const projectBatchDeleteMatch = path.match(/^\/api\/project-tracking\/batches\/(\d+)$/);
+  if (method === 'DELETE' && projectBatchDeleteMatch) {
+    const batchId = Number(projectBatchDeleteMatch[1]);
+    store.projectTrackingProjects = (store.projectTrackingProjects ?? []).filter(
+      (p) => p.import_batch_id !== batchId || p.source_status === 'Manual'
+    );
+    store.projectTrackingBatches = (store.projectTrackingBatches ?? []).filter((b) => b.id !== batchId);
+    saveClientStore(store);
+    return clientBootstrap(store);
+  }
+
   throw new Error('No local demo handler for this request');
 }
 
 async function api(path, options = {}) {
-  if (
-    state.auth.token
-    && !path.startsWith('/api/auth')
-    && path !== '/api/user-store'
-    && path !== '/api/bootstrap'
-    && path !== '/api/project-tracking/preview'
-  ) {
-    return clientApi(path, options);
-  }
-
   try {
     const headers = {
       'Content-Type': 'application/json',
-      ...(state.auth.token ? { Authorization: `Bearer ${state.auth.token}` } : {}),
       ...(options.headers ?? {})
     };
-    const response = await fetch(path, {
-      ...options,
-      headers
-    });
+    const response = await fetch(path, { ...options, headers });
     const contentType = response.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) throw new Error('API unavailable');
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || 'API unavailable');
     return payload;
-  } catch (error) {
-    if (path.startsWith('/api/auth') || path === '/api/user-store') {
-      const message = String(error.message || '');
-      if (
-        message.includes('Not found')
-        || message.includes('API unavailable')
-        || message.includes('Vercel KV is not configured')
-      ) {
-        return clientApi(path, options);
-      }
-      throw error;
-    }
+  } catch {
     return clientApi(path, options);
   }
 }
 
-async function loadUserWorkspace() {
-  const localStore = readStoredClientStore();
-  let remoteStore = null;
-  try {
-    const response = await fetch('/api/user-store', {
-      headers: { Authorization: `Bearer ${state.auth.token}` }
-    });
-    if (response.ok) {
-      const payload = await response.json();
-      remoteStore = payload.data;
+function migrateLocalStorage() {
+  if (localStorage.getItem(STORAGE_KEY)) return;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key?.startsWith(`${STORAGE_KEY}:user:`)) {
+      const data = localStorage.getItem(key);
+      if (data) { localStorage.setItem(STORAGE_KEY, data); return; }
     }
-  } catch {
-    remoteStore = null;
   }
+}
 
-  const store = hasWorkspaceContent(remoteStore)
-    ? remoteStore
-    : localStore || remoteStore || createDefaultStore();
+function hasPayloadContent(payload) {
+  return Boolean(payload && (
+    (payload.issues ?? []).length ||
+    (payload.batches ?? []).length ||
+    (payload.projectTrackingProjects ?? []).length ||
+    (payload.projectTrackingBatches ?? []).length
+  ));
+}
 
-  localStorage.setItem(currentStorageKey(), JSON.stringify(store));
-  if (state.auth.token) void saveRemoteStore(store);
-  return clientBootstrap(store);
+function hasIssueContent(payload) {
+  return Boolean(payload && (
+    (payload.issues ?? []).length ||
+    (payload.batches ?? []).length
+  ));
+}
+
+function hasProjectContent(payload) {
+  return Boolean(payload && (
+    (payload.projectTrackingProjects ?? []).length ||
+    (payload.projectTrackingBatches ?? []).length
+  ));
+}
+
+function hasCrispContent(payload) {
+  return Boolean(payload && (
+    (payload.crispOperators ?? []).length ||
+    (payload.crispBatches ?? []).length ||
+    (payload.crispMonths ?? []).length
+  ));
+}
+
+function mergedBootstrapStore(payload = {}, fallbackStore = null, options = {}) {
+  const localStore = fallbackStore ?? readStoredClientStore() ?? {};
+  const issueSource = options.keepLocalIssuesWhenServerEmpty && !hasIssueContent(payload) && hasIssueContent(localStore)
+    ? localStore
+    : payload;
+  const projectSource = options.keepLocalProjectsWhenServerEmpty && !hasProjectContent(payload) && hasProjectContent(localStore)
+    ? localStore
+    : payload;
+  const crispSource = hasCrispContent(payload) ? payload : localStore;
+
+  return createDefaultStore({
+    issues: issueSource.issues ?? [],
+    batches: issueSource.batches ?? [],
+    projectTrackingProjects: projectSource.projectTrackingProjects ?? [],
+    projectTrackingBatches: projectSource.projectTrackingBatches ?? [],
+    crispOperators: crispSource.crispOperators ?? [],
+    crispBatches: crispSource.crispBatches ?? [],
+    crispMonths: crispSource.crispMonths ?? [],
+    settings: {
+      ...(localStore.settings ?? {}),
+      ...(payload.settings ?? {})
+    },
+    rules: Array.isArray(payload.rules) && payload.rules.length
+      ? payload.rules
+      : localStore.rules
+  });
 }
 
 async function initialBootstrap() {
-  if (state.auth.token) {
-    try {
-      const payload = await api('/api/auth/me');
-      state.auth.user = payload.user;
-      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
-      return loadUserWorkspace();
-    } catch {
-      signOut(false);
+  migrateLocalStorage();
+  const localStore = readStoredClientStore();
+
+  // Try server — only trust it if it actually has data
+  try {
+    const serverPayload = await fetch('/api/bootstrap', {
+      headers: { 'Content-Type': 'application/json' }
+    }).then((r) => r.json());
+    if (hasPayloadContent(serverPayload)) {
+      return clientBootstrap(mergedBootstrapStore(serverPayload, localStore, {
+        keepLocalIssuesWhenServerEmpty: true,
+        keepLocalProjectsWhenServerEmpty: true
+      }));
     }
-  }
-  return clientBootstrap(createDefaultStore());
+  } catch { /* server unavailable */ }
+
+  // Server empty or unreachable — fall back to localStorage
+  if (hasWorkspaceContent(localStore)) return clientBootstrap(localStore);
+
+  // Nothing anywhere — load demo seed
+  return clientBootstrap(createDefaultStore(await loadDemoSeed()));
 }
 
 function applyBootstrap(payload) {
-  state.issues = payload.issues ?? [];
-  state.batches = payload.batches ?? [];
-  state.projectTrackingProjects = payload.projectTrackingProjects ?? [];
-  state.projectTrackingBatches = payload.projectTrackingBatches ?? [];
-  state.crisp.operators = payload.crispOperators ?? [];
-  state.crisp.batches = payload.crispBatches ?? [];
-  state.crisp.months = payload.crispMonths ?? [];
+  const normalized = clientBootstrap(mergedBootstrapStore(payload));
+  state.issues = normalized.issues ?? [];
+  state.batches = normalized.batches ?? [];
+  state.projectTrackingProjects = normalized.projectTrackingProjects ?? [];
+  state.projectTrackingBatches = normalized.projectTrackingBatches ?? [];
+  state.crisp.operators = normalized.crispOperators ?? [];
+  state.crisp.batches = normalized.crispBatches ?? [];
+  state.crisp.months = normalized.crispMonths ?? [];
   if (!state.crisp.selectedMonth && state.crisp.months.length) {
     state.crisp.selectedMonth = state.crisp.months[0].month;
   }
-  state.settings = payload.settings ?? {};
-  state.rules = payload.rules ?? [];
+  state.settings = normalized.settings ?? {};
+  state.rules = normalized.rules ?? [];
 }
 
 function resetFilters() {
@@ -4741,34 +5648,6 @@ app.addEventListener('click', async (event) => {
       renderOverlayOnly();
       return;
     }
-    if (action === 'open-auth') {
-      state.auth.modal = actionElement.dataset.mode || 'signin';
-      renderOverlayOnly();
-      return;
-    }
-    if (action === 'close-auth') {
-      state.auth.modal = '';
-      renderOverlayOnly();
-      return;
-    }
-    if (action === 'auth-submit') {
-      authSubmit(actionElement.dataset.mode || 'signin');
-      return;
-    }
-    if (action === 'toggle-password') {
-      const input = actionElement.closest('.auth-password-wrap')?.querySelector('[data-auth-field="password"]');
-      if (input) {
-        const isHidden = input.type === 'password';
-        input.type = isHidden ? 'text' : 'password';
-        actionElement.textContent = isHidden ? 'Hide' : 'Show';
-        input.focus();
-      }
-      return;
-    }
-    if (action === 'sign-out') {
-      signOut();
-      return;
-    }
     if (action === 'close-project-modal') {
       state.selectedProjectId = null;
       renderOverlayOnly();
@@ -4814,8 +5693,91 @@ app.addEventListener('click', async (event) => {
       uploadCrispCsv();
       return;
     }
+    if (action === 'save-crisp-ai') {
+      const monthKey = actionElement.dataset.month;
+      if (monthKey) { readAndSaveCrispAiForm(monthKey); saveCrispAiData(); render(); toast('AI performance data saved.'); }
+      return;
+    }
+    if (action === 'add-crisp-topic') {
+      const monthKey = actionElement.dataset.month;
+      if (monthKey) {
+        readAndSaveCrispAiForm(monthKey);
+        const entry = crispAiForMonth(monthKey);
+        state.crisp.aiData[monthKey] = { ...entry, topics: [...(entry.topics ?? []), { name: '', count: 0 }] };
+        saveCrispAiData(); render();
+      }
+      return;
+    }
+    if (action === 'remove-crisp-topic') {
+      const monthKey = actionElement.dataset.month;
+      const idx = Number(actionElement.dataset.index);
+      if (monthKey) {
+        readAndSaveCrispAiForm(monthKey);
+        const entry = crispAiForMonth(monthKey);
+        const topics = (entry.topics ?? []).filter((_, i) => i !== idx);
+        state.crisp.aiData[monthKey] = { ...entry, topics };
+        saveCrispAiData(); render();
+      }
+      return;
+    }
+    if (action === 'open-project-import-modal') {
+      state.projectTracking.importModal = true;
+      render();
+      return;
+    }
+    if (action === 'close-project-import-modal') {
+      state.projectTracking.importModal = false;
+      render();
+      return;
+    }
+    if (action === 'submit-add-project') {
+      addProject();
+      return;
+    }
+    if (action === 'open-upload-modal') {
+      state.uploadModal = actionElement.dataset.type || '';
+      render();
+      return;
+    }
+    if (action === 'close-upload-modal') {
+      state.uploadModal = '';
+      state.uploadLoading = false;
+      state.uploadResult = null;
+      state.uploadSelectedFiles = [];
+      render();
+      return;
+    }
+    if (action === 'delete-issue-batch') {
+      const batchId = Number(actionElement.dataset.batchId);
+      if (!batchId || !window.confirm('Delete this import batch? All issues from this import will be removed.')) return;
+      try {
+        applyBootstrap(await api(`/api/batches/${batchId}`, { method: 'DELETE' }));
+        toast('Import deleted.');
+        render();
+      } catch (e) { toast(`Delete failed: ${e.message}`); }
+      return;
+    }
+    if (action === 'delete-crisp-batch') {
+      const batchId = Number(actionElement.dataset.batchId);
+      if (!batchId || !window.confirm('Delete this Crisp import? All operator data for this month will be removed.')) return;
+      try {
+        applyBootstrap(await api(`/api/crisp/batches/${batchId}`, { method: 'DELETE' }));
+        toast('Crisp import deleted.');
+        render();
+      } catch (e) { toast(`Delete failed: ${e.message}`); }
+      return;
+    }
+    if (action === 'delete-project-batch') {
+      const batchId = Number(actionElement.dataset.batchId);
+      if (!batchId || !window.confirm('Delete this project import? Projects exclusively from this batch will be removed.')) return;
+      try {
+        applyBootstrap(await api(`/api/project-tracking/batches/${batchId}`, { method: 'DELETE' }));
+        toast('Project import deleted.');
+        render();
+      } catch (e) { toast(`Delete failed: ${e.message}`); }
+      return;
+    }
     if (action === 'add-project') {
-      if (!window.confirm('Add a new manual project?')) return;
       addProject();
       return;
     }
@@ -4835,6 +5797,160 @@ app.addEventListener('click', async (event) => {
       addNote(actionElement.dataset.id);
       return;
     }
+    if (action === 'open-meeting-summary-modal') {
+      state.meeting.summaryModalOpen = true;
+      render();
+      return;
+    }
+    if (action === 'close-meeting-summary-modal') {
+      state.meeting.summaryModalOpen = false;
+      render();
+      return;
+    }
+    if (action === 'save-meeting-summary') {
+      const monthKey = actionElement.dataset.month;
+      if (monthKey) {
+        readAndSaveMeetingSummary(monthKey);
+        saveMeetingData();
+        state.meeting.summaryModalOpen = false;
+        render();
+        toast('Meeting summary saved.');
+      }
+      return;
+    }
+    if (action === 'add-meeting-moment') {
+      state.meeting.addMomentOpen = true;
+      state.meeting.editingMomentId = null;
+      _meetingEditPhotos = [null, null];
+      render();
+      return;
+    }
+    if (action === 'edit-meeting-moment') {
+      const id = Number(actionElement.dataset.momentId);
+      const moment = (state.meeting.moments ?? []).find((m) => m.id === id);
+      if (!moment) return;
+      state.meeting.editingMomentId = id;
+      state.meeting.addMomentOpen = false;
+      _meetingEditPhotos = [moment.photos?.[0] ?? null, moment.photos?.[1] ?? null];
+      render();
+      return;
+    }
+    if (action === 'close-meeting-modal') {
+      state.meeting.addMomentOpen = false;
+      state.meeting.editingMomentId = null;
+      _meetingEditPhotos = [null, null];
+      render();
+      return;
+    }
+    if (action === 'save-meeting-moment') {
+      const monthKey = actionElement.dataset.month || currentMeetingMonth();
+      const fields = {
+        companyName: app.querySelector('[data-meeting-modal-field="companyName"]')?.value ?? '',
+        activityType: app.querySelector('[data-meeting-modal-field="activityType"]')?.value ?? '',
+        activityName: app.querySelector('[data-meeting-modal-field="activityName"]')?.value ?? '',
+        date: app.querySelector('[data-meeting-modal-field="date"]')?.value ?? '',
+      };
+      const photos = _meetingEditPhotos.filter(Boolean);
+      const isEdit = state.meeting.editingMomentId !== null;
+      if (isEdit) {
+        state.meeting.moments = (state.meeting.moments ?? []).map((m) =>
+          m.id === state.meeting.editingMomentId ? { ...m, ...fields, photos, month: monthKey } : m
+        );
+      } else {
+        const newId = Math.max(0, ...(state.meeting.moments ?? []).map((m) => m.id ?? 0)) + 1;
+        state.meeting.moments = [...(state.meeting.moments ?? []), { id: newId, month: monthKey, ...fields, photos }];
+      }
+      state.meeting.addMomentOpen = false;
+      state.meeting.editingMomentId = null;
+      _meetingEditPhotos = [null, null];
+      saveMeetingData();
+      render();
+      toast(isEdit ? 'Moment updated.' : 'Moment added.');
+      return;
+    }
+    if (action === 'delete-meeting-moment') {
+      const id = Number(actionElement.dataset.momentId);
+      if (!window.confirm('Delete this moment?')) return;
+      state.meeting.moments = (state.meeting.moments ?? []).filter((m) => m.id !== id);
+      state.meeting.editingMomentId = null;
+      state.meeting.addMomentOpen = false;
+      _meetingEditPhotos = [null, null];
+      saveMeetingData();
+      render();
+      toast('Moment deleted.');
+      return;
+    }
+    if (action === 'add-manual-entry') {
+      state.manual.addModalOpen = true;
+      state.manual.editingEntryId = null;
+      render();
+      return;
+    }
+    if (action === 'close-manual-modal') {
+      state.manual.addModalOpen = false;
+      state.manual.editingEntryId = null;
+      render();
+      return;
+    }
+    if (action === 'save-manual-entry') {
+      const monthKey = actionElement.dataset.month || currentManualMonth();
+      const topic = app.querySelector('[data-manual-field="topic"]')?.value?.trim() ?? '';
+      if (!topic) { toast('Topic is required.'); return; }
+      const entry = {
+        url: app.querySelector('[data-manual-field="url"]')?.value?.trim() ?? '',
+        type: app.querySelector('[data-manual-field="type"]')?.value ?? '',
+        date: app.querySelector('[data-manual-field="date"]')?.value ?? ''
+      };
+      const isEdit = state.manual.editingEntryId !== null;
+      if (isEdit) {
+        state.manual.entries = (state.manual.entries ?? []).map((e) =>
+          e.id === state.manual.editingEntryId ? { ...e, topic, ...entry, month: monthKey } : e
+        );
+      } else {
+        const newId = Math.max(0, ...(state.manual.entries ?? []).map((e) => e.id ?? 0)) + 1;
+        state.manual.entries = [...(state.manual.entries ?? []), { id: newId, month: monthKey, topic, ...entry }];
+      }
+      state.manual.addModalOpen = false;
+      state.manual.editingEntryId = null;
+      saveManualData();
+      render();
+      toast(isEdit ? 'Entry updated.' : 'Entry added.');
+      return;
+    }
+    if (action === 'edit-manual-entry') {
+      const id = Number(actionElement.dataset.entryId);
+      state.manual.editingEntryId = id;
+      state.manual.addModalOpen = false;
+      render();
+      return;
+    }
+    if (action === 'delete-manual-entry') {
+      const id = Number(actionElement.dataset.entryId);
+      if (!window.confirm('Delete this entry?')) return;
+      state.manual.entries = (state.manual.entries ?? []).filter((e) => e.id !== id);
+      saveManualData();
+      render();
+      toast('Entry deleted.');
+      return;
+    }
+    if (action === 'toggle-manual-edit') {
+      state.manual.editMode = !state.manual.editMode;
+      render();
+      return;
+    }
+    if (action === 'clear-meeting-photo') {
+      const slotIndex = Number(actionElement.dataset.slot);
+      _meetingEditPhotos[slotIndex] = null;
+      updateMeetingPhotoSlot(slotIndex);
+      return;
+    }
+  }
+
+  if (event.target.closest('[data-photo-slot]') && !event.target.matches('[data-action]') && !event.target.matches('img')) {
+    const slot = event.target.closest('[data-photo-slot]');
+    const fileInput = slot.querySelector('[data-photo-file]');
+    fileInput?.click();
+    return;
   }
 
   const dateOpen = closestFromEvent(event, '[data-date-open]')?.dataset.dateOpen;
@@ -4912,26 +6028,49 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
-  if (clickedElement?.matches('[data-auth-backdrop]')) {
-    state.auth.modal = '';
-    renderOverlayOnly();
-    return;
-  }
-
   if (clickedElement?.matches('[data-modal-backdrop]')) {
     state.selectedIssueId = null;
     renderOverlayOnly();
     return;
   }
 
+  if (clickedElement?.matches('[data-meeting-summary-modal-backdrop]')) {
+    state.meeting.summaryModalOpen = false;
+    renderOverlayOnly();
+    return;
+  }
+  if (clickedElement?.matches('[data-meeting-modal-backdrop]')) {
+    state.meeting.addMomentOpen = false;
+    state.meeting.editingMomentId = null;
+    _meetingEditPhotos = [null, null];
+    renderOverlayOnly();
+    return;
+  }
+
+  if (clickedElement?.matches('[data-manual-modal-backdrop]')) {
+    state.manual.addModalOpen = false;
+    state.manual.editingEntryId = null;
+    renderOverlayOnly();
+    return;
+  }
+
+  if (clickedElement?.matches('[data-project-import-backdrop]')) {
+    state.projectTracking.importModal = false;
+    renderOverlayOnly();
+    return;
+  }
+
+  if (clickedElement?.matches('[data-upload-modal-backdrop]')) {
+    state.uploadModal = '';
+    state.uploadLoading = false;
+    state.uploadResult = null;
+    state.uploadSelectedFiles = [];
+    renderOverlayOnly();
+    return;
+  }
+
   const view = closestFromEvent(event, '[data-view]')?.dataset.view;
   if (view) {
-    if (!state.auth.user && view !== 'home') {
-      state.auth.modal = 'signin';
-      toast('Please sign in before opening a workspace.');
-      render();
-      return;
-    }
     state.view = view;
     state.selectedProjectId = null;
     state.openFilter = '';
@@ -4967,14 +6106,25 @@ app.addEventListener('click', async (event) => {
   const projectView = closestFromEvent(event, '[data-project-view]')?.dataset.projectView;
   if (projectView) {
     state.projectTracking.activeView = projectView;
-    render();
+    renderPreservingScroll();
+    return;
+  }
+
+  const timelineSortField = closestFromEvent(event, '[data-timeline-sort]')?.dataset.timelineSort;
+  if (timelineSortField) {
+    const current = state.projectTracking.timelineSort;
+    state.projectTracking.timelineSort = {
+      field: timelineSortField,
+      dir: current.field === timelineSortField && current.dir === 'asc' ? 'desc' : 'asc'
+    };
+    renderPreservingScroll();
     return;
   }
 
   const crispView = closestFromEvent(event, '[data-crisp-view]')?.dataset.crispView;
   if (crispView) {
     state.crisp.activeView = crispView;
-    render();
+    renderPreservingScroll();
     return;
   }
 
@@ -4996,12 +6146,6 @@ app.addEventListener('click', async (event) => {
 });
 
 app.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && targetElementFromEvent(event)?.matches('[data-auth-field]')) {
-    const authMode = targetElementFromEvent(event).dataset.authMode || state.auth.modal || 'signin';
-    event.preventDefault();
-    authSubmit(authMode);
-    return;
-  }
   if (!['Enter', ' '].includes(event.key)) return;
   const projectId = closestFromEvent(event, '[data-open-project]')?.dataset.openProject;
   if (!projectId) return;
@@ -5012,16 +6156,6 @@ app.addEventListener('keydown', (event) => {
 
 app.addEventListener('input', (event) => {
   const target = event.target;
-  if (target.matches('[data-auth-field]')) {
-    const field = target.dataset.authField;
-    const mode = target.dataset.authMode;
-    if (mode) {
-      state.auth.draft[`${mode}${field[0].toUpperCase()}${field.slice(1)}`] = target.value;
-    } else {
-      state.auth.draft[field] = target.value;
-    }
-    return;
-  }
   if (target.matches('[data-project-draft-field]')) {
     updateProjectImportDraft(target);
     return;
@@ -5032,7 +6166,8 @@ app.addEventListener('input', (event) => {
       ...(state.projectTracking.filters ?? {}),
       [target.dataset.projectFilter]: target.value
     };
-    render();
+    clearTimeout(_searchDebounce);
+    _searchDebounce = setTimeout(renderPreservingScroll, 160);
     return;
   }
   if (target.matches('[data-crisp-import-month]')) {
@@ -5048,12 +6183,36 @@ app.addEventListener('input', (event) => {
       state.filters[key] = target.value;
     }
     state.activePreset = '';
-    render();
+    if (key === 'search') {
+      clearTimeout(_searchDebounce);
+      _searchDebounce = setTimeout(renderPreservingScroll, 160);
+    } else {
+      renderPreservingScroll();
+    }
   }
 });
 
 app.addEventListener('change', (event) => {
   const target = event.target;
+  if (target.matches('[data-meeting-month]')) {
+    state.meeting.selectedMonth = target.value;
+    render();
+    return;
+  }
+  if (target.matches('[data-manual-month]')) {
+    state.manual.selectedMonth = target.value;
+    render();
+    return;
+  }
+  if (target.matches('[data-photo-file]')) {
+    const slotIndex = Number(target.dataset.photoFile);
+    const file = target.files?.[0];
+    if (!file) return;
+    compressMeetingImage(file).then((compressed) => {
+      if (compressed) { _meetingEditPhotos[slotIndex] = compressed; updateMeetingPhotoSlot(slotIndex); }
+    });
+    return;
+  }
   if (target.matches('[data-project-draft-field]')) {
     updateProjectImportDraft(target);
     renderOverlayOnly();
@@ -5064,7 +6223,7 @@ app.addEventListener('change', (event) => {
     state.openFilter = field;
     state.filters[field] = [...app.querySelectorAll(`[data-filter-check="${field}"]:checked`)].map((input) => input.value);
     state.activePreset = '';
-    render();
+    renderPreservingScroll();
   }
   if (target.matches('[data-filter-one]')) {
     state.openFilter = '';
@@ -5073,7 +6232,7 @@ app.addEventListener('change', (event) => {
       state.filters.sort_dir = defaultSortDirection(target.value);
     }
     state.activePreset = '';
-    render();
+    renderPreservingScroll();
     return;
   }
   if (target.matches('[data-project-filter-one]')) {
@@ -5082,7 +6241,7 @@ app.addEventListener('change', (event) => {
       ...(state.projectTracking.filters ?? {}),
       [target.dataset.projectFilterOne]: target.value
     };
-    render();
+    renderPreservingScroll();
     return;
   }
   if (target.matches('[data-crisp-selected-month]')) {
@@ -5114,13 +6273,32 @@ app.addEventListener('change', (event) => {
   if (target.matches('[data-project-field]')) {
     saveProjectField(target);
   }
+  if (target.matches('input[type="file"][data-action]')) {
+    const files = [...(target.files ?? [])];
+    _pendingUploadFiles = files;
+    const label = target.closest('.import-drop-zone');
+    if (!label) return;
+    const span = label.querySelector('span');
+    const iconEl = label.querySelector('.import-drop-icon');
+    if (files.length === 0) {
+      label.classList.remove('has-file');
+      if (span) span.textContent = 'Drop file / Select file';
+      if (iconEl) { iconEl.style.color = ''; iconEl.textContent = '↑'; }
+    } else {
+      label.classList.add('has-file');
+      if (span) span.textContent = files.map((f) => f.name).join(', ');
+      if (iconEl) { iconEl.style.color = '#1a7a40'; iconEl.textContent = '✓'; }
+    }
+  }
 });
 
 async function uploadCsv(format = 'normalized') {
-  const input = app.querySelector(format === 'jira' ? '[data-action="jira-file"]' : '[data-action="csv-file"]');
-  const files = [...(input?.files ?? [])];
+  const files = _pendingUploadFiles.length ? _pendingUploadFiles : [...(app.querySelector(format === 'jira' ? '[data-action="jira-file"]' : '[data-action="csv-file"]')?.files ?? [])];
   if (!files.length) return toast('Select one or more CSV files first.');
   const endpoint = format === 'jira' ? '/api/import-jira' : '/api/import';
+  state.uploadLoading = true;
+  state.uploadResult = null;
+  render();
   let latestPayload = null;
   const results = [];
   try {
@@ -5134,13 +6312,25 @@ async function uploadCsv(format = 'normalized') {
       results.push({ file: file.name, validRows: payload.validRows ?? 0, skippedRows: payload.skippedRows ?? 0 });
     }
     if (latestPayload) applyBootstrap(latestPayload);
-    state.view = 'dashboard';
     const importedRows = results.reduce((sum, result) => sum + result.validRows, 0);
     const skippedRows = results.reduce((sum, result) => sum + result.skippedRows, 0);
-    toast(`Imported ${files.length} file${files.length === 1 ? '' : 's'} / ${importedRows} rows. Skipped ${skippedRows}.`);
+    state.uploadLoading = false;
+    state.uploadResult = {
+      type: 'success',
+      message: `✓ Imported ${importedRows} rows from ${files.length} file${files.length === 1 ? '' : 's'}. Skipped ${skippedRows}.`
+    };
     render();
+    setTimeout(() => {
+      state.uploadModal = '';
+      state.uploadResult = null;
+      state.uploadLoading = false;
+      state.uploadSelectedFiles = [];
+      state.view = 'dashboard';
+      render();
+    }, 2000);
   } catch (error) {
-    toast(`Import failed after ${results.length} file${results.length === 1 ? '' : 's'}: ${error.message}`);
+    state.uploadLoading = false;
+    state.uploadResult = { type: 'error', message: `Import failed: ${error.message}` };
     render();
   }
 }
@@ -5171,6 +6361,7 @@ async function uploadProjectWorkbook() {
       render();
       return;
     }
+    state.projectTracking.importModal = false;
     state.projectTracking.importReview = review;
     toast(`${review.validRows ?? 0} matching projects found. Review missing fields before import.`);
     render();
@@ -5185,17 +6376,32 @@ async function uploadCrispCsv() {
   const month = app.querySelector('[data-crisp-import-month]')?.value || state.crisp.selectedMonth || currentMonthKey();
   const file = input?.files?.[0];
   if (!file) return toast('Select a Crisp operator CSV first.');
+  state.uploadLoading = true;
+  state.uploadResult = null;
+  render();
   try {
     const content = await file.text();
     const payload = importClientCrispCsv(file.name, content, month);
     applyBootstrap(payload);
-    state.view = 'crisp-performance';
     state.crisp.activeView = 'performance';
     state.crisp.selectedMonth = month;
-    toast(`Imported ${payload.validRows ?? 0} Crisp operators for ${periodLabel(month)}. Skipped ${payload.skippedRows ?? 0}.`);
+    state.uploadLoading = false;
+    state.uploadResult = {
+      type: 'success',
+      message: `✓ Imported ${payload.validRows ?? 0} Crisp operators for ${periodLabel(month)}. Skipped ${payload.skippedRows ?? 0}.`
+    };
     render();
+    setTimeout(() => {
+      state.uploadModal = '';
+      state.uploadResult = null;
+      state.uploadLoading = false;
+      state.uploadSelectedFiles = [];
+      state.view = 'crisp-performance';
+      render();
+    }, 2000);
   } catch (error) {
-    toast(`Crisp import failed: ${error.message}`);
+    state.uploadLoading = false;
+    state.uploadResult = { type: 'error', message: `Crisp import failed: ${error.message}` };
     render();
   }
 }
@@ -5243,16 +6449,27 @@ async function confirmProjectImport() {
 }
 
 async function addProject() {
+  const form = app.querySelector('[data-project-add-form]');
+  const body = {
+    customer_name: form?.querySelector('[data-add-field="customer_name"]')?.value.trim() || null,
+    package_type: form?.querySelector('[data-add-field="package_type"]')?.value || 'Pro',
+    user_count: Number(form?.querySelector('[data-add-field="user_count"]')?.value) || 0,
+    kickoff_date: form?.querySelector('[data-add-field="kickoff_date"]')?.value || null,
+    onboarding_date: form?.querySelector('[data-add-field="onboarding_date"]')?.value || null,
+    training_date: form?.querySelector('[data-add-field="training_date"]')?.value || null,
+    golive_date: form?.querySelector('[data-add-field="golive_date"]')?.value || null
+  };
   try {
     const payload = await api('/api/project-tracking/projects', {
       method: 'POST',
-      body: JSON.stringify({})
+      body: JSON.stringify(body)
     });
     applyBootstrap(payload);
+    state.projectTracking.importModal = false;
     state.view = 'project-dashboard';
     state.projectTracking.activeView = 'board';
     state.selectedProjectId = Number(payload.createdProjectId ?? state.projectTrackingProjects[0]?.id ?? 0) || null;
-    toast('Project added. Fill in the dashboard fields.');
+    toast('Project added.');
     render();
   } catch (error) {
     toast(`Add project failed: ${error.message}`);
@@ -5297,51 +6514,6 @@ async function saveProjectField(input) {
   } catch (error) {
     toast(`Project update failed: ${error.message}`);
     render();
-  }
-}
-
-async function authSubmit(mode = 'signin') {
-  const authMode = mode === 'register' ? 'register' : 'signin';
-  const form = app.querySelector(`[data-auth-form="${authMode}"]`);
-  const username = form?.querySelector('[data-auth-field="username"]')?.value
-    ?? app.querySelector('[data-auth-field="username"]')?.value;
-  const password = form?.querySelector('[data-auth-field="password"]')?.value
-    ?? app.querySelector('[data-auth-field="password"]')?.value;
-  try {
-    const payload = await api(`/api/auth/${authMode === 'register' ? 'register' : 'login'}`, {
-      method: 'POST',
-      body: JSON.stringify({ username, password })
-    });
-    state.auth.token = payload.token;
-    state.auth.user = payload.user;
-    state.auth.modal = '';
-    state.auth.draft = {
-      username: '',
-      password: ''
-    };
-    localStorage.setItem(AUTH_TOKEN_KEY, payload.token);
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(payload.user));
-    applyBootstrap(await loadUserWorkspace());
-    toast(`${authMode === 'register' ? 'Registered' : 'Signed in'} as ${payload.user.username}.`);
-    render();
-  } catch (error) {
-    toast(error.message || 'Sign in failed.');
-    renderOverlayOnly();
-  }
-}
-
-function signOut(shouldRender = true) {
-  state.auth.token = '';
-  state.auth.user = null;
-  state.auth.modal = '';
-  localStorage.removeItem(AUTH_TOKEN_KEY);
-  localStorage.removeItem(AUTH_USER_KEY);
-  if (shouldRender) {
-    toast('Signed out.');
-    initialBootstrap().then((payload) => {
-      applyBootstrap(payload);
-      render();
-    });
   }
 }
 
@@ -5404,5 +6576,30 @@ function toast(message) {
   }, 3000);
 }
 
+window.addEventListener('popstate', () => {
+  const view = getViewFromHash();
+  state.view = view;
+  state.openFilter = '';
+  state.openDatePicker = '';
+  render();
+});
+
+document.addEventListener('paste', async (event) => {
+  if (!app.querySelector('.meeting-modal')) return;
+  const items = [...(event.clipboardData?.items ?? [])];
+  const imageItem = items.find((item) => item.type.startsWith('image/'));
+  if (!imageItem) return;
+  event.preventDefault();
+  const emptySlot = _meetingEditPhotos.indexOf(null);
+  if (emptySlot === -1) return;
+  const file = imageItem.getAsFile();
+  if (!file) return;
+  const compressed = await compressMeetingImage(file);
+  if (compressed) { _meetingEditPhotos[emptySlot] = compressed; updateMeetingPhotoSlot(emptySlot); }
+});
+
 applyBootstrap(await initialBootstrap());
+if (window.location.hash) {
+  state.view = getViewFromHash();
+}
 render();

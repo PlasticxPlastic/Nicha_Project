@@ -528,7 +528,7 @@ export function updateProjectTrackingProject(id, field, value) {
   `).run(nextValue, JSON.stringify([...editedFields]), new Date().toISOString(), Number(id));
 }
 
-export function createProjectTrackingProject() {
+export function createProjectTrackingProject(fields = {}) {
   const now = new Date().toISOString();
   const result = db.prepare(`
     INSERT INTO project_tracking_projects (
@@ -539,16 +539,16 @@ export function createProjectTrackingProject() {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     `manual-${randomUUID()}`,
-    null,
-    null,
-    'Pro',
-    0,
+    fields.customer_name || null,
+    fields.customer_name || null,
+    fields.package_type || 'Pro',
+    Number(fields.user_count) || 0,
     'Manual',
     'Kick-off',
-    new Date().toISOString().slice(0, 10),
-    null,
-    null,
-    null,
+    fields.kickoff_date || new Date().toISOString().slice(0, 10),
+    fields.onboarding_date || null,
+    fields.training_date || null,
+    fields.golive_date || null,
     null,
     null,
     JSON.stringify([...EDITABLE_FIELDS]),
@@ -561,4 +561,19 @@ export function createProjectTrackingProject() {
 
 export function deleteProjectTrackingProject(id) {
   db.prepare('DELETE FROM project_tracking_projects WHERE id = ?').run(Number(id));
+}
+
+export function deleteProjectTrackingBatch(batchId) {
+  db.exec('BEGIN');
+  try {
+    db.prepare(`
+      DELETE FROM project_tracking_projects
+      WHERE import_batch_id = ? AND source_status != 'Manual'
+    `).run(batchId);
+    db.prepare('DELETE FROM project_tracking_batches WHERE id = ?').run(batchId);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 }

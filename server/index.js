@@ -2,9 +2,9 @@ import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, getBatches, getIssues, getProjectTrackingBatches, getProjectTrackingProjects, getRules, getSettings, getUserWorkspace, loginUser, migrate, registerUser, saveUserWorkspace, tokenForUser, userFromToken } from './db.js';
+import { db, deleteIssueBatch, deleteCrispBatch, getBatches, getIssues, getProjectTrackingBatches, getProjectTrackingProjects, getRules, getSettings, migrate } from './db.js';
 import { importCsvContent, importJiraCsvContent } from './importer.js';
-import { createProjectTrackingProject, deleteProjectTrackingProject, importProjectTrackingProjects, importProjectTrackingXlsx, previewProjectTrackingXlsx, updateProjectTrackingProject } from './projectTracking.js';
+import { createProjectTrackingProject, deleteProjectTrackingBatch, deleteProjectTrackingProject, importProjectTrackingProjects, importProjectTrackingXlsx, previewProjectTrackingXlsx, updateProjectTrackingProject } from './projectTracking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -43,19 +43,6 @@ function bootstrapPayload() {
   };
 }
 
-function authUser(request) {
-  const header = request.headers.authorization ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  return userFromToken(token);
-}
-
-function authPayload(user) {
-  return {
-    user: { id: user.id, username: user.username },
-    token: tokenForUser(user)
-  };
-}
-
 function isVenioIssue(issue) {
   return String(issue?.project_name ?? '').trim().toLowerCase() === 'venio'
     || String(issue?.issue_key ?? '').trim().toUpperCase().startsWith('VENIO-');
@@ -73,56 +60,6 @@ function serveStatic(request, response) {
 
 async function handleApi(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
-
-  if (request.method === 'POST' && url.pathname === '/api/auth/register') {
-    const body = JSON.parse(await readBody(request));
-    try {
-      const user = registerUser(body.username, body.password);
-      json(response, 200, authPayload(user));
-    } catch (error) {
-      json(response, 400, { error: error.message });
-    }
-    return;
-  }
-
-  if (request.method === 'POST' && url.pathname === '/api/auth/login') {
-    const body = JSON.parse(await readBody(request));
-    try {
-      const user = loginUser(body.username, body.password);
-      json(response, 200, authPayload(user));
-    } catch (error) {
-      json(response, 401, { error: error.message });
-    }
-    return;
-  }
-
-  if (request.method === 'GET' && url.pathname === '/api/auth/me') {
-    const user = authUser(request);
-    json(response, user ? 200 : 401, user ? authPayload(user) : { error: 'Not signed in.' });
-    return;
-  }
-
-  if (request.method === 'GET' && url.pathname === '/api/user-store') {
-    const user = authUser(request);
-    if (!user) {
-      json(response, 401, { error: 'Sign in required.' });
-      return;
-    }
-    json(response, 200, { data: getUserWorkspace(user.id) });
-    return;
-  }
-
-  if (request.method === 'PUT' && url.pathname === '/api/user-store') {
-    const user = authUser(request);
-    if (!user) {
-      json(response, 401, { error: 'Sign in required.' });
-      return;
-    }
-    const body = JSON.parse(await readBody(request));
-    saveUserWorkspace(user.id, body.data ?? {});
-    json(response, 200, { ok: true });
-    return;
-  }
 
   if (request.method === 'GET' && url.pathname === '/api/bootstrap') {
     json(response, 200, bootstrapPayload());
@@ -160,7 +97,9 @@ async function handleApi(request, response) {
   }
 
   if (request.method === 'POST' && url.pathname === '/api/project-tracking/projects') {
-    const createdProjectId = createProjectTrackingProject();
+    let body = {};
+    try { body = JSON.parse(await readBody(request)); } catch (_) {}
+    const createdProjectId = createProjectTrackingProject(body);
     json(response, 200, { ...bootstrapPayload(), createdProjectId });
     return;
   }
@@ -175,6 +114,30 @@ async function handleApi(request, response) {
 
   if (request.method === 'DELETE' && projectMatch) {
     deleteProjectTrackingProject(Number(projectMatch[1]));
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  const issueBatchMatch = url.pathname.match(/^\/api\/batches\/(\d+)$/);
+  if (request.method === 'DELETE' && issueBatchMatch) {
+    const batchId = Number(issueBatchMatch[1]);
+    deleteIssueBatch(batchId);
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  const crispBatchMatch = url.pathname.match(/^\/api\/crisp\/batches\/(\d+)$/);
+  if (request.method === 'DELETE' && crispBatchMatch) {
+    const batchId = Number(crispBatchMatch[1]);
+    deleteCrispBatch(batchId);
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  const projectBatchRouteMatch = url.pathname.match(/^\/api\/project-tracking\/batches\/(\d+)$/);
+  if (request.method === 'DELETE' && projectBatchRouteMatch) {
+    const batchId = Number(projectBatchRouteMatch[1]);
+    deleteProjectTrackingBatch(batchId);
     json(response, 200, bootstrapPayload());
     return;
   }
