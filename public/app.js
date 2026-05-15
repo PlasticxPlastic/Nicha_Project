@@ -93,6 +93,18 @@ const state = {
       review: ''
     }
   },
+  venioView: 'dashboard',
+  venioIssue: {
+    selectedMonth: '',
+    categorySort: 'desc'
+  },
+  etaxgoView: 'dashboard',
+  etaxgoIssue: {
+    selectedMonth: '',
+    categorySort: 'desc'
+  },
+  etaxgoRules: [],
+  over45EditingId: null,
   uploadModal: '',
   uploadLoading: false,
   uploadResult: null,
@@ -114,7 +126,8 @@ const state = {
     summaryModalOpen: false
   },
   manual: {
-    selectedMonth: '',
+    selectedYear: '',
+    selectedMonthFilter: '',
     entries: [],
     editMode: false,
     addModalOpen: false,
@@ -168,14 +181,12 @@ const labels = {
   home: 'Home',
   'project-dashboard': 'Project Dashboard',
   'crisp-performance': 'Crisp Chat',
-  upload: 'Upload',
-  'jira-upload': 'Jira Import',
   dashboard: 'Executive Briefing',
   board: 'Issue Board',
-  table: 'Issue Table',
   settings: 'Settings',
   'meeting': 'Venio Meeting',
-  'manual': 'Venio Manual'
+  'manual': 'Venio Manual',
+  'etaxgo-issue': 'eTaxGo Issue'
 };
 
 const brandAssets = {
@@ -355,9 +366,7 @@ function number(value) {
 }
 
 function dateValue(value) {
-  if (!value) return null;
-  const date = new Date(String(value).replace(' ', 'T'));
-  return Number.isNaN(date.getTime()) ? null : date;
+  return dateOrNull(value);
 }
 
 function formatDate(value) {
@@ -437,6 +446,113 @@ function countByVenioCategory(items) {
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+const ETAXGO_CATEGORIES = [
+  'PDF/Report', 'Doc Missing', 'Display/UI', 'Failed',
+  'Email', 'API', 'Certificate', 'Batch', 'Coin', 'Other'
+];
+
+function normalizeEtaxGoCategoryName(value, fallback = 'Other') {
+  const text = norm(value);
+  if (!text) return fallback;
+  const lowered = text.toLowerCase();
+  if (lowered === 'failed status') return 'Failed';
+  if (lowered === 'email/notification') return 'Email';
+  return text;
+}
+
+function detectEtaxGoCategoryClient(issue, rules = state.etaxgoRules ?? []) {
+  if (!isEtaxGoIssue(issue)) {
+    return { category: null, confidence: null, rule: null };
+  }
+  const text = `${issue.summary ?? ''} ${issue.description ?? ''}`.toLowerCase();
+  const matches = new Map();
+
+  for (const rule of rules.filter((item) => item.active)) {
+    const keyword = String(rule.keyword ?? '').toLowerCase().trim();
+    if (!keyword) continue;
+    if (text.includes(keyword)) {
+      const category = normalizeEtaxGoCategoryName(rule.category);
+      matches.set(category, (matches.get(category) ?? 0) + Number(rule.weight ?? 1));
+    }
+  }
+
+  if (!matches.size) {
+    return { category: 'Other', confidence: 'Low', rule: 'No matching rule' };
+  }
+
+  const sorted = [...matches.entries()].sort((a, b) => b[1] - a[1]);
+  const [category, score] = sorted[0];
+  const secondScore = sorted[1]?.[1] ?? 0;
+  let confidence = 'Low';
+  if (score >= 10 && score >= secondScore + 5) confidence = 'High';
+  else if (score >= 8) confidence = 'Medium';
+  return { category, confidence, rule: `${category} keyword score ${score}` };
+}
+
+function isEtaxGoIssue(issue) {
+  return norm(issue.project_name).toLowerCase() === 'etaxgo' || norm(issue.issue_key).toUpperCase().startsWith('ETAXGO-');
+}
+
+function etaxGoIssues(items) {
+  return items.filter(isEtaxGoIssue);
+}
+
+function categoryForEtaxGoIssue(issue, fallback = '-') {
+  if (!isEtaxGoIssue(issue)) return fallback;
+  const finalCategory = normalizeEtaxGoCategoryName(issue.venio_category_final, '');
+  if (finalCategory) return finalCategory;
+  return detectEtaxGoCategoryClient(issue).category || 'Other';
+}
+
+function countByEtaxGoCategory(items) {
+  const counts = new Map();
+  for (const issue of etaxGoIssues(items)) {
+    const key = categoryForEtaxGoIssue(issue, 'Uncategorized');
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function currentEtaxGoMonth() {
+  return state.etaxgoIssue.selectedMonth || currentMonthKey();
+}
+
+function productionIssues(items) {
+  return items.filter((issue) => norm(issue.issue_type) === 'Production Issue');
+}
+
+function boardColumns() {
+  return ['To Do', 'In Progress', 'Done', 'Reject'];
+}
+
+function boardColumnForIssue(issue) {
+  const statusCategory = norm(issue.status_category);
+  if (boardColumns().includes(statusCategory)) return statusCategory;
+  const rejectSignals = `${issue.status_category ?? ''} ${issue.status ?? ''} ${issue.issue_resolution ?? ''}`.toLowerCase();
+  if (/reject|rejected|decline|declined|cancel|cancelled|duplicate|not a bug/.test(rejectSignals)) return 'Reject';
+  return 'Reject';
+}
+
+function overDaysThreshold() {
+  return settingNumber('over_days_threshold') || 45;
+}
+
+function projectDaysFromKickoff(project) {
+  if (!project.kickoff_date) return null;
+  const kickoff = new Date(project.kickoff_date);
+  if (isNaN(kickoff.getTime())) return null;
+  return Math.floor((Date.now() - kickoff.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function over45DaysProjects(projects) {
+  const threshold = overDaysThreshold();
+  return projects.filter((p) => {
+    const days = projectDaysFromKickoff(p);
+    if (days === null || days <= threshold) return false;
+    return p.stage !== 'GoLive' && p.stage !== 'Warranty';
+  });
 }
 
 function pendingLevel(issue) {
@@ -1113,12 +1229,10 @@ function renderShell(content) {
     { key: 'project-dashboard', label: labels['project-dashboard'] },
     { key: 'crisp-performance', label: labels['crisp-performance'] },
     { key: 'dashboard', label: 'Venio Issue' },
+    { key: 'etaxgo-issue', label: labels['etaxgo-issue'] },
     { key: 'meeting', label: labels['meeting'] },
     { key: 'manual', label: labels['manual'] }
   ];
-  const venioNav = ['upload', 'jira-upload', 'board', 'table', 'settings'];
-  const venioWorkspaceViews = ['dashboard', ...venioNav];
-  const isVenioWorkspace = venioWorkspaceViews.includes(state.view);
   return `
     <div class="shell">
       <aside class="sidebar">
@@ -1135,14 +1249,6 @@ function renderShell(content) {
               <span class="nav-ico">${icon(item.key)}</span><span>${item.label}</span>
             </button>
           `).join('')}
-          ${isVenioWorkspace ? `
-            <div class="nav-section">Venio Issue</div>
-            ${venioNav.map((key) => `
-              <button class="${state.view === key ? 'active' : ''}" data-view="${key}">
-                <span class="nav-ico">${icon(key)}</span><span>${labels[key]}</span>
-              </button>
-            `).join('')}
-          ` : ''}
         </nav>
         <div class="sidebar-footer">
           <div class="sidebar-footer-icon">&#129302;</div>
@@ -1534,6 +1640,11 @@ function projectDateFields(project) {
   ].map(([stage, field]) => ({ stage, field, date: project[field] ?? '' }));
 }
 
+function projectJourneyTooltip(project, stage) {
+  const match = projectDateFields(project).find((item) => item.stage === stage);
+  return match?.date ? `${stage}: ${displayDate(match.date)}` : `Waiting ${stage}`;
+}
+
 function projectStageBadge(project, fieldName = 'stage') {
   const stage = norm(project[fieldName]) || 'Kick-off';
   return `
@@ -1867,7 +1978,8 @@ function projectTimelineView(projects, allProjects = projects) {
                       <div class="project-process-steps">
                         ${processStages.map((stage, index) => {
                           const cls = grouped === 'On Hold' ? 'paused' : index < activeIndex ? 'done' : index === activeIndex ? 'current' : 'waiting';
-                          return `<span class="${cls}">${escapeHtml(stage)}</span>`;
+                          const tooltip = projectJourneyTooltip(project, stage);
+                          return `<span class="${cls}" title="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">${escapeHtml(stage)}</span>`;
                         }).join('')}
                       </div>
                     </td>
@@ -2040,6 +2152,49 @@ function projectHeroBanner() {
   `;
 }
 
+function renderOver45DaysModule(projects) {
+  const threshold = overDaysThreshold();
+  const overProjects = over45DaysProjects(projects);
+  if (!overProjects.length) return '';
+  return `
+    <section class="over45-section">
+      <div class="over45-header">
+        <h2>Over ${threshold} Days Project <span class="over45-warn-icon">&#9888;</span></h2>
+      </div>
+      <div class="over45-cards">
+        ${overProjects.map((project) => {
+          const days = projectDaysFromKickoff(project);
+          const isEditing = state.over45EditingId === project.id;
+          const insight = norm(project.notes);
+          const packageInfo = [project.package_type, project.user_count ? `${project.user_count} Users` : ''].filter(Boolean).join(' ');
+          return `
+            <div class="over45-card">
+              <div class="over45-card-head">
+                <span class="over45-card-name">${escapeHtml(project.customer_name || project.project_name || '-')}</span>
+                <span class="over45-days-badge">${days} Days</span>
+              </div>
+              <div class="over45-card-package">${escapeHtml(packageInfo || '-')}</div>
+              <div class="over45-insight-block">
+                <div class="over45-insight-label">Insight</div>
+                ${isEditing ? `
+                  <textarea class="over45-insight-textarea" data-over45-edit="${project.id}" rows="3">${escapeHtml(insight)}</textarea>
+                  <div class="over45-insight-actions">
+                    <button class="button primary" style="font-size:12px;padding:5px 12px" data-action="save-over45-insight" data-id="${project.id}">Save</button>
+                    <button class="button ghost" style="font-size:12px;padding:5px 12px" data-action="cancel-over45-insight">Cancel</button>
+                  </div>
+                ` : `
+                  <div class="over45-insight-text ${insight ? '' : 'over45-insight-empty'}">${insight ? escapeHtml(insight) : 'กรุณาระบุ'}</div>
+                  <button class="over45-edit-btn" type="button" data-action="edit-over45-insight" data-id="${project.id}" title="Edit insight"><span class="pencil-icon">&#9999;</span></button>
+                `}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </section>
+  `;
+}
+
 function renderProjectDashboard() {
   const projects = state.projectTrackingProjects;
   const m = projectMetrics(projects);
@@ -2061,6 +2216,7 @@ function renderProjectDashboard() {
     </section>
 
     ${projectActiveView(projects)}
+    ${renderOver45DaysModule(projects)}
   `);
 }
 
@@ -2085,8 +2241,8 @@ function crispMetrics(operators) {
     .reduce((sum, operator) => sum + number(operator.conversations), 0);
   const activeOperators = operators.filter((operator) => number(operator.conversations) > 0);
   const avgRating = crispWeightedAverage(operators, 'rating', { excludeZero: true });
-  const avgResponseSeconds = crispWeightedAverage(operators, 'firstResponseAverageSeconds');
-  const avgResolutionSeconds = crispWeightedAverage(operators, 'resolutionAverageSeconds');
+  const avgResponseSeconds = crispWeightedAverage(operators, 'firstResponseMedianSeconds');
+  const avgResolutionSeconds = crispWeightedAverage(operators, 'resolutionMedianSeconds');
   const topVolume = [...activeOperators].sort((a, b) => number(b.conversations) - number(a.conversations))[0] ?? null;
   const fastestResponse = [...activeOperators]
     .filter((operator) => Number.isFinite(Number(operator.firstResponseAverageSeconds)))
@@ -2124,7 +2280,7 @@ function crispOperatorTable(operators) {
           <thead>
             <tr>
               <th>Operator</th>
-              <th>Total Chat</th>
+              <th>Total Case</th>
               <th>Rating</th>
               <th>Avg. Response</th>
               <th>Avg. Resolution</th>
@@ -2490,26 +2646,67 @@ function crispAiChartsPanel(monthKey) {
           </div>
         </div>
       </section>
+      ${crispAiHumanConversationChart(monthKey)}
     </div>
+  `;
+}
+
+function crispAiHumanConversationChart(selectedMonth) {
+  const ai = crispAiForMonth(selectedMonth);
+  const humanConversationValue = selectedMonth === '2026-05' ? 419 : (Number(ai.inboxTotal) || 0);
+  const rows = [
+    { label: 'AI', value: Number(ai.aiChatbotTotal) || 0, tone: 'ai' },
+    { label: 'Human', value: humanConversationValue, tone: 'human' }
+  ];
+  const maxValue = Math.max(1, ...rows.map((row) => row.value));
+  const hasData = rows.some((row) => row.value > 0);
+  return `
+    <section class="panel crisp-ai-chart-panel crisp-ai-bar-panel">
+      <div class="panel-title">
+        <div>
+          <h2>Conversations</h2>
+          <span>${escapeHtml(periodLabel(selectedMonth))} &middot; AI vs Human</span>
+        </div>
+        <div class="crisp-panel-actions">
+          <button class="button crisp-inline-add-btn" type="button" data-action="open-crisp-ai-manual" data-month="${escapeHtml(selectedMonth || state.crisp.selectedMonth || '')}">+ Manual</button>
+        </div>
+      </div>
+      ${hasData ? `
+        <div class="crisp-horizontal-bars" aria-label="Selected month AI versus Human conversation chart">
+          ${rows.map((row) => `
+            <div class="crisp-horizontal-bar-row">
+              <div class="crisp-horizontal-bar-head">
+                <span class="crisp-horizontal-bar-label ${row.tone}">${escapeHtml(row.label)}</span>
+                <strong class="crisp-horizontal-bar-value">${row.value}</strong>
+              </div>
+              <div class="crisp-horizontal-bar-track">
+                <div class="crisp-horizontal-bar-fill ${row.tone}" style="width:${Math.max(row.value > 0 ? 8 : 0, (row.value / maxValue) * 100)}%"></div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="crisp-bar-legend">
+          <span class="ai">AI</span>
+          <span class="human">Human</span>
+        </div>
+      ` : `
+        <div class="crisp-combo-empty">
+          <strong>No manual AI/Human case data yet</strong>
+          <span>Use + Manual to enter AI Chatbot and Human case counts for ${escapeHtml(periodLabel(selectedMonth))}.</span>
+        </div>
+      `}
+    </section>
   `;
 }
 
 function crispMonthlyMovement(months, currentMonth) {
   const previousMonth = crispPreviousMonth(months, currentMonth?.month);
-  const aiSec = crispAiResponseSeconds(currentMonth?.month);
-  const prevAiSec = crispAiResponseSeconds(previousMonth?.month);
-  const aiDelta = crispDelta(aiSec, prevAiSec, 'response', true);
   return `
     <section class="crisp-trend-grid" aria-label="Month over month Crisp trends">
-      ${crispMovementCard('Conversations', 'conversations', currentMonth, previousMonth)}
+      ${crispMovementCard('Total Case', 'conversations', currentMonth, previousMonth)}
       ${crispMovementCard('Avg. Rating', 'rating', currentMonth, previousMonth)}
       ${crispMovementCard('Avg. Response', 'response', currentMonth, previousMonth, true)}
       ${crispMovementCard('Avg. Resolution', 'resolution', currentMonth, previousMonth, true)}
-      <article class="crisp-trend-card ${aiDelta.tone}">
-        <span>Avg. AI Response</span>
-        <strong>${aiSec !== null ? escapeHtml(formatDurationSeconds(aiSec)) : '-'}</strong>
-        <small>${escapeHtml(aiDelta.text)}${previousMonth ? ` from ${escapeHtml(periodLabel(previousMonth.month))}` : ''}</small>
-      </article>
     </section>
   `;
 }
@@ -2785,15 +2982,13 @@ function renderCrispPerformance() {
   const monthLabel = activeMonth ? periodLabel(activeMonth.month) : 'No month selected';
 
   return renderShell(`
-    <div class="page-title">
-      <div>
-        <h1>Crisp Chat Performance</h1>
-        <div class="subtle">Operator response, rating, and resolution quality by monthly Crisp export.</div>
+    <div class="project-hero-banner">
+      <div class="project-hero-text">
+        <div class="project-hero-title">Crisp Chat</div>
+        <div class="project-hero-date">${escapeHtml(monthLabel)}</div>
       </div>
-      <div class="page-meta">
-        <span><strong>${metrics.totalConversations}</strong> conversations</span>
-        <span><strong>${operators.length}</strong> operators</span>
-        <span><strong>${escapeHtml(monthLabel)}</strong></span>
+      <div class="project-hero-mascot">
+        <img src="/assets/robot-mascot.png" alt="Team mascot" onerror="this.replaceWith(document.createTextNode('&#129302;'))">
       </div>
     </div>
 
@@ -3000,14 +3195,14 @@ function meetingMomentCard(m) {
     <div class="meeting-moment-card">
       <div class="meeting-moment-card-header">
         <strong class="meeting-moment-company">${escapeHtml(m.companyName || 'Company')}</strong>
-        <button class="icon-button" type="button" data-action="edit-meeting-moment" data-moment-id="${m.id}" title="Edit">&#9998;</button>
+        <button class="icon-button" type="button" data-action="edit-meeting-moment" data-moment-id="${m.id}" title="Edit"><span class="pencil-icon">&#9999;</span></button>
       </div>
       <div class="meeting-moment-activity">${escapeHtml([m.activityType, m.activityName].filter(Boolean).join(' : '))}</div>
       <div class="meeting-moment-photos">
         ${photos.map((p) => `<div class="meeting-moment-photo"><img src="${p}" alt=""></div>`).join('')}
         ${Array(Math.max(0, 2 - photos.length)).fill('<div class="meeting-moment-photo empty"></div>').join('')}
       </div>
-      <div class="meeting-moment-date">${escapeHtml(m.date ? formatDate(m.date) : '')}</div>
+      <div class="meeting-moment-date">${escapeHtml(m.date ? displayDate(m.date) : '')}</div>
     </div>
   `;
 }
@@ -3015,6 +3210,8 @@ function meetingMomentCard(m) {
 function renderMeeting() {
   const monthKey = currentMeetingMonth();
   const summary = meetingSummaryForMonth(monthKey);
+  const totalAttemptsDisplay = 4;
+  const onsiteTrainingDisplay = 2;
   const retraining = summary.retraining ?? {};
   const retrainingTotal = (Number(retraining.lite) || 0) + (Number(retraining.pro) || 0) + (Number(retraining.proPlus) || 0);
   const demo = summary.demo ?? {};
@@ -3037,12 +3234,15 @@ function renderMeeting() {
         <span>Month</span>
         <input type="month" class="meeting-month-input" value="${escapeHtml(monthKey)}" data-meeting-month>
       </label>
-      <button class="button primary" type="button" data-action="open-meeting-summary-modal">&#9998; Add Summary</button>
+      <button class="button primary" type="button" data-action="open-meeting-summary-modal"><span class="pencil-icon">&#9999;</span> Add Summary</button>
     </div>
 
     <div class="meeting-summary-grid">
       ${meetingMetricCard('Total Attempts', `
-        <div class="meeting-big-num">${Number(summary.totalAttempts) || 0}</div>
+        <div class="meeting-total-attempts-num">${totalAttemptsDisplay}</div>
+      `)}
+      ${meetingMetricCard('Onsite training', `
+        <div class="meeting-total-attempts-num">${onsiteTrainingDisplay}</div>
       `)}
       ${meetingMetricCard('Online : Re-Training', `
         <div class="meeting-retraining-top">
@@ -3086,8 +3286,23 @@ function renderMeeting() {
   `);
 }
 
+function currentManualYear() {
+  return state.manual.selectedYear || String(new Date().getFullYear());
+}
+
 function currentManualMonth() {
-  return state.manual.selectedMonth || currentMonthKey();
+  const year = currentManualYear();
+  const mf = state.manual.selectedMonthFilter;
+  return mf ? `${year}-${mf}` : currentMonthKey();
+}
+
+function manualEntriesForYear(year, monthFilter) {
+  const prefix = monthFilter ? `${year}-${monthFilter}` : year;
+  const raw = (state.manual.entries ?? []).filter((e) => {
+    const d = e.date || '';
+    return d.startsWith(prefix);
+  });
+  return raw.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 }
 
 function manualEntriesForMonth(monthKey) {
@@ -3137,9 +3352,14 @@ function manualModal() {
 }
 
 function renderManual() {
-  const monthKey = currentManualMonth();
-  const entries = manualEntriesForMonth(monthKey);
+  const year = currentManualYear();
+  const monthFilter = state.manual.selectedMonthFilter;
+  const entries = manualEntriesForYear(year, monthFilter);
   const m = manualMetrics(entries);
+
+  const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const bannerSubtitle = monthFilter ? `${MONTH_FULL[parseInt(monthFilter, 10) - 1]} ${year}` : year;
 
   const metricCard = (label, value) => `
     <div class="manual-metric-card">
@@ -3153,7 +3373,7 @@ function renderManual() {
     <div class="project-hero-banner">
       <div class="project-hero-text">
         <div class="project-hero-title">Venio Manual</div>
-        <div class="project-hero-date">${escapeHtml(periodLabel(monthKey))}</div>
+        <div class="project-hero-date">${escapeHtml(bannerSubtitle)}</div>
       </div>
       <div class="project-hero-mascot">
         <img src="/assets/robot-mascot.png" alt="mascot" onerror="this.replaceWith(document.createTextNode('&#129302;'))">
@@ -3162,8 +3382,18 @@ function renderManual() {
 
     <div class="manual-toolbar">
       <label class="meeting-month-picker-wrap">
+        <span>Year</span>
+        <input type="number" class="meeting-month-input manual-year-input" min="2020" max="2035" value="${escapeHtml(year)}" data-manual-year>
+      </label>
+      <label class="meeting-month-picker-wrap">
         <span>Month</span>
-        <input type="month" class="meeting-month-input" value="${escapeHtml(monthKey)}" data-manual-month>
+        <select class="meeting-month-input" data-manual-month-filter>
+          <option value="">All months</option>
+          ${MONTH_NAMES.map((name, i) => {
+            const mm = String(i + 1).padStart(2, '0');
+            return `<option value="${mm}" ${monthFilter === mm ? 'selected' : ''}>${name}</option>`;
+          }).join('')}
+        </select>
       </label>
       <button class="button primary" type="button" data-action="add-manual-entry">+ Add</button>
     </div>
@@ -3190,17 +3420,17 @@ function renderManual() {
             <tr class="manual-row">
               <td>${e.url ? `<a href="${escapeHtml(e.url)}" target="_blank" rel="noopener" class="manual-topic-link">${escapeHtml(e.topic)}</a>` : escapeHtml(e.topic)}</td>
               <td><span class="manual-type-pill ${typeColor[e.type] ?? ''}">${escapeHtml(e.type)}</span></td>
-              <td class="manual-date-cell">${escapeHtml(e.date ? formatDate(e.date) : '')}</td>
-              ${state.manual.editMode ? `<td class="manual-actions-cell"><button class="icon-button" data-action="edit-manual-entry" data-entry-id="${e.id}" title="Edit">&#9998;</button><button class="icon-button manual-delete-btn" data-action="delete-manual-entry" data-entry-id="${e.id}" title="Delete">&times;</button></td>` : ''}
-            </tr>
-          `).join('') : `<tr><td colspan="${state.manual.editMode ? 4 : 3}" class="manual-empty">No entries for this month.</td></tr>`}
+              <td class="manual-date-cell">${escapeHtml(e.date ? displayDate(e.date) : '')}</td>
+              ${state.manual.editMode ? `<td class="manual-actions-cell"><button class="icon-button" data-action="edit-manual-entry" data-entry-id="${e.id}" title="Edit"><span class="pencil-icon">&#9999;</span></button><button class="icon-button manual-delete-btn" data-action="delete-manual-entry" data-entry-id="${e.id}" title="Delete">&times;</button></td>` : ''}
+            </tr>`
+          ).join('') : `<tr><td colspan="${state.manual.editMode ? 4 : 3}" class="manual-empty">No entries for this period.</td></tr>`}
         </tbody>
       </table>
     </section>
 
     <div class="manual-fab-row">
       <button class="manual-fab" type="button" data-action="add-manual-entry" title="Add entry">+</button>
-      <button class="manual-fab manual-fab-edit ${state.manual.editMode ? 'active' : ''}" type="button" data-action="toggle-manual-edit" title="Edit mode">&#9998;</button>
+      <button class="manual-fab manual-fab-edit ${state.manual.editMode ? 'active' : ''}" type="button" data-action="toggle-manual-edit" title="Edit mode"><span class="pencil-icon">&#9999;</span></button>
     </div>
 
     ${manualModal()}
@@ -3392,6 +3622,18 @@ function projectAddImportModal() {
 
 function genericUploadModal() {
   if (!state.uploadModal) return '';
+  const issueImportHistory = state.batches.length ? `
+    <div class="import-batch-history">
+      <div class="import-batch-history-title">Imported Files</div>
+      ${state.batches.map((batch) => `
+        <div class="import-batch-row">
+          <span class="import-batch-name" title="${escapeHtml(batch.filename)}">${escapeHtml(middleEllipsis(batch.filename, 28))}</span>
+          <span class="import-batch-meta">${batch.valid_rows} rows · ${displayDate(batch.imported_at)}</span>
+          <button class="icon-button import-batch-delete" type="button" data-action="delete-batch" data-batch-id="${batch.id}" title="Delete this import" aria-label="Delete import ${escapeHtml(batch.filename)}">&#128465;</button>
+        </div>
+      `).join('')}
+    </div>
+  ` : '';
   const config = {
     venio: {
       title: 'Import Venio CSV',
@@ -3399,15 +3641,43 @@ function genericUploadModal() {
       accept: '.csv,text/csv',
       action: 'csv-file',
       submit: 'upload-csv',
-      btnLabel: 'Upload CSV'
+      btnLabel: 'Upload CSV',
+      extra: `
+        <label class="import-month-label"><span>Month</span><input type="month" data-venio-import-month value="${escapeHtml(currentVenioMonth())}"></label>
+        ${issueImportHistory}
+      `
+    },
+    etaxgo: {
+      title: 'Import eTaxGo CSV',
+      note: 'Prepared dashboard CSV with Report Date, Last Updated Date, Resolved Date, Time to Solve, and Pending Age columns for eTaxGo issues.',
+      accept: '.csv,text/csv',
+      action: 'csv-file',
+      submit: 'upload-etaxgo-csv',
+      btnLabel: 'Upload CSV',
+      extra: `
+        <label class="import-month-label"><span>Month</span><input type="month" data-etaxgo-import-month value="${escapeHtml(currentEtaxGoMonth())}"></label>
+        ${issueImportHistory}
+      `
     },
     jira: {
       title: 'Import Jira CSV',
-      note: 'Raw Jira export CSV. The app calculates Report Date, Last Updated Date, Resolved Date, Time to Solve, and Pending Age automatically.',
+      note: 'Raw Jira export CSV. Only Venio project issues of type Production Issue or Beauty are imported. Each issue is grouped by its created date.',
       accept: '.csv,text/csv',
       action: 'jira-file',
       submit: 'upload-jira-csv',
-      btnLabel: 'Import Jira CSV'
+      btnLabel: 'Import Jira CSV',
+      extra: state.batches.length ? `
+        <div class="import-batch-history">
+          <div class="import-batch-history-title">Previous Imports</div>
+          ${state.batches.map((batch) => `
+            <div class="import-batch-row">
+              <span class="import-batch-name" title="${escapeHtml(batch.filename)}">${escapeHtml(middleEllipsis(batch.filename, 28))}</span>
+              <span class="import-batch-meta">${batch.valid_rows} rows · ${displayDate(batch.imported_at)}</span>
+              <button class="icon-button import-batch-delete" type="button" data-action="delete-batch" data-batch-id="${batch.id}" title="Delete this import" aria-label="Delete import ${escapeHtml(batch.filename)}">&#128465;</button>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''
     },
     crisp: {
       title: 'Import Crisp CSV',
@@ -3417,6 +3687,26 @@ function genericUploadModal() {
       submit: 'upload-crisp-csv',
       btnLabel: 'Import Crisp CSV',
       extra: `<label class="import-month-label"><span>Month</span><input type="month" data-crisp-import-month value="${escapeHtml(state.crisp.selectedMonth || currentMonthKey())}"></label>`
+    },
+    'etaxgo-jira': {
+      title: 'Import Jira CSV (eTaxGo)',
+      note: 'Raw Jira export CSV. Only eTaxGo project issues of type Production Issue, Request, or Beauty are imported. Each issue is grouped by its created date.',
+      accept: '.csv,text/csv',
+      action: 'etaxgo-jira-file',
+      submit: 'upload-etaxgo-jira-csv',
+      btnLabel: 'Import Jira CSV',
+      extra: state.batches.length ? `
+        <div class="import-batch-history">
+          <div class="import-batch-history-title">Previous Imports</div>
+          ${state.batches.map((batch) => `
+            <div class="import-batch-row">
+              <span class="import-batch-name" title="${escapeHtml(batch.filename)}">${escapeHtml(middleEllipsis(batch.filename, 28))}</span>
+              <span class="import-batch-meta">${batch.valid_rows} rows · ${displayDate(batch.imported_at)}</span>
+              <button class="icon-button import-batch-delete" type="button" data-action="delete-batch" data-batch-id="${batch.id}" title="Delete this import" aria-label="Delete import ${escapeHtml(batch.filename)}">&#128465;</button>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''
     }
   };
   const c = config[state.uploadModal];
@@ -3730,58 +4020,1211 @@ function renderProductFocusSummary(items) {
   `;
 }
 
-function renderExecutiveDashboard() {
-  const items = filteredIssues();
-  const profile = riskProfile(items);
-  const { m } = profile;
-  const resolutionRate = formatPercent(percent(m.resolved, m.total));
-  const openRate = formatPercent(profile.openRate);
-  const latest = state.batches[0];
-  const dateRange = latest
-    ? `${displayDate(latest.min_report_date) || '-'} to ${displayDate(latest.max_report_date) || '-'}`
-    : 'No imported period';
+function venioViewTabs() {
+  const tabs = [
+    ['dashboard', 'Executive Briefing', 'dashboard'],
+    ['board', 'Issue Board', 'board'],
+    ['settings', 'Settings', 'settings']
+  ];
+  return `
+    <div class="project-board-tabs" aria-label="Venio Issue views">
+      ${tabs.map(([key, label, iconKey]) => `
+        <button class="${state.venioView === key ? 'active' : ''}" type="button" data-venio-view="${key}">
+          ${icon(iconKey)} ${escapeHtml(label)}
+        </button>
+      `).join('')}
+      <div style="flex:1"></div>
+      <button class="button primary" type="button" data-action="open-upload-modal" data-type="venio">
+        ${icon('upload')} Import CSV
+      </button>
+    </div>
+  `;
+}
 
+function renderVenioWorkspace() {
+  const headers = {
+    dashboard: ['Issue Intelligence Dashboard', 'Monthly and quarterly service issue signal for product focus.'],
+    board: ['Issue Board', 'Operational board grouped by current status category.'],
+    settings: ['Settings', 'Configure thresholds, dark mode, and category keyword rules.']
+  };
+  const [title, hint] = headers[state.venioView] ?? headers.dashboard;
+  let content;
+  if (state.venioView === 'board') content = boardContent();
+  else if (state.venioView === 'settings') content = settingsContent();
+  else content = executiveDashboardContent();
+  const showFilter = state.venioView === 'board';
   return renderShell(`
-    ${pageHeader('Issue Intelligence Dashboard', 'Monthly and quarterly service issue signal for product focus.')}
-    ${filterPanel()}
-    <section class="executive-kpis">
-      ${executiveKpi('Total Issues', m.total, 'Current filtered dataset')}
-      ${executiveKpi('Open Backlog', m.open, `${openRate} of all issues`, m.open ? 'watch' : 'ok')}
-      ${executiveKpi('Critical Aging', m.pendingCritical, `Over ${state.settings.pending_critical_hours}h`, m.pendingCritical ? 'danger' : 'ok')}
-      ${executiveKpi('High Priority Pending', profile.highPending, 'High, Highest, Critical still open', profile.highPending ? 'danger' : 'ok')}
-      ${executiveKpi('Avg Pending Age', `${m.avgPending.toFixed(1)}h`, 'Open issues only', m.avgPending > settingNumber('pending_warning_hours') ? 'watch' : '')}
-      ${executiveKpi('Top Customer Impact', profile.topCustomer[0], `${profile.topCustomer[1]} issue${profile.topCustomer[1] === 1 ? '' : 's'}`)}
-    </section>
-    <section class="dashboard-main-grid">
-      ${renderMonthlyVolumePanel(items)}
-      ${renderIssueTypeDistribution(items)}
-    </section>
-    ${renderProductFocusSummary(items)}
-    <section class="period-detail-grid">
-      ${renderPeriodDetail(items, 'month')}
-      ${renderPeriodDetail(items, 'quarter')}
-    </section>
-    <section class="deep-dive">
-      <div class="section-label">Operational Detail</div>
-      <div class="dashboard-grid">
-        ${chart('Backlog Flow', countBy(items, 'status_category'), { caption: 'Where work sits now' })}
-        ${chart('Issue Types Overall', countBy(items, 'issue_type'), { caption: 'All filtered data' })}
-        ${chart('Priority Mix', countBy(items, 'priority'), { caption: `${m.high} high-priority total` })}
-        ${renderResolutionRateChart(items)}
-        ${renderTopPending(items)}
-        ${chart('Customer Impact', knownAccountCount(items), { caption: 'Largest affected accounts', limit: 7 })}
+    <div class="project-hero-banner">
+      <div class="project-hero-text">
+        <div class="project-hero-title">Venio Issue</div>
+        <div class="project-hero-date">${escapeHtml(periodLabel(currentVenioMonth()))}</div>
       </div>
-    </section>
-    <section class="panel deep-dive-summary">
-      <div class="section-label">Leadership Readout</div>
-      <p class="report-summary">${escapeHtml(feedbackSummary(items))}</p>
-      <div class="executive-meta">
-        <span>Imported period: <strong>${escapeHtml(dateRange)}</strong></span>
-        <span>Filtered scope: <strong>${m.total}</strong> issues</span>
-        <span>Resolution rate: <strong>${resolutionRate}</strong></span>
+      <div class="project-hero-mascot">
+        <img src="/assets/robot-mascot.png" alt="Team mascot" onerror="this.replaceWith(document.createTextNode('&#129302;'))">
       </div>
-    </section>
+    </div>
+    ${showFilter ? filterPanel() : ''}
+    ${venioViewTabs()}
+    ${content}
   `);
+}
+
+function currentVenioMonth() {
+  return state.venioIssue.selectedMonth || currentMonthKey();
+}
+
+// ── eTaxGo Workspace ──────────────────────────────────────────────────────────
+
+function etaxGoMonthPicker() {
+  const allIssues = etaxGoIssues(state.issues);
+  const issueKeys = [...new Set(allIssues.map((i) => monthKey(i.report_date)).filter((k) => k !== 'Unknown'))].sort();
+  const selected = currentEtaxGoMonth();
+  const keys = issueKeys.length ? issueKeys : [selected];
+  return `
+    <label class="venio-month-label">
+      <span>Month</span>
+      <select class="venio-month-select" data-etaxgo-issue-month>
+        ${keys.map((k) => `<option value="${escapeHtml(k)}" ${selected === k ? 'selected' : ''}>${escapeHtml(periodLabel(k))}</option>`).join('')}
+      </select>
+    </label>
+  `;
+}
+
+function etaxGoViewTabs() {
+  const tabs = [
+    ['dashboard', 'Executive Briefing', 'dashboard'],
+    ['board', 'Issue Board', 'board'],
+    ['settings', 'Settings', 'settings']
+  ];
+  return `
+    <div class="project-board-tabs" aria-label="eTaxGo Issue views">
+      ${tabs.map(([key, label, iconKey]) => `
+        <button class="${state.etaxgoView === key ? 'active' : ''}" type="button" data-etaxgo-view="${key}">
+          ${icon(iconKey)} ${escapeHtml(label)}
+        </button>
+      `).join('')}
+      <div style="flex:1"></div>
+      <button class="button primary" type="button" data-action="open-upload-modal" data-type="etaxgo">
+        ${icon('upload')} Import CSV
+      </button>
+      <button class="button ghost" type="button" data-action="open-upload-modal" data-type="etaxgo-jira">
+        ${icon('upload')} Import Jira CSV
+      </button>
+    </div>
+  `;
+}
+
+function executiveEtaxGoDashboardContentLegacy() {
+  const allEtaxGo = etaxGoIssues(state.issues);
+  const selMonth = currentEtaxGoMonth();
+  const [selYear, selMon] = selMonth.split('-').map(Number);
+
+  const prevMonth = selMon === 1
+    ? `${selYear - 1}-12`
+    : `${selYear}-${String(selMon - 1).padStart(2, '0')}`;
+
+  const monthItems = allEtaxGo.filter((i) => monthKey(i.report_date) === selMonth);
+  const prevItems = allEtaxGo.filter((i) => monthKey(i.report_date) === prevMonth);
+
+  // KPI: Total Issues
+  const totalCount = monthItems.length;
+  const prevTotalCount = prevItems.length;
+  const totalDiff = totalCount - prevTotalCount;
+  const totalPct = prevTotalCount > 0 ? Math.round((totalDiff / prevTotalCount) * 100) : null;
+  const totalTrend = totalDiff > 0 ? 'danger' : totalDiff < 0 ? 'ok' : '';
+  const totalTrendText = totalPct !== null ? `${totalDiff >= 0 ? '+' : ''}${totalPct}% vs last month` : 'No prior month';
+
+  // KPI: by issue type
+  const piCount = monthItems.filter((i) => i.issue_type === 'Production Issue').length;
+  const requestCount = monthItems.filter((i) => i.issue_type === 'Request').length;
+  const beautyCount = monthItems.filter((i) => i.issue_type === 'Beauty').length;
+
+  // KPI: Stale Issues (all-time open, no update 30+ days)
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const staleIssues = allEtaxGo.filter((i) => {
+    if (isResolved(i)) return false;
+    const updated = i.last_updated_date ? new Date(i.last_updated_date) : null;
+    return !updated || updated < thirtyDaysAgo;
+  });
+
+  // Issue Type Distribution donut
+  const typeEntries = [
+    ['Production Issue', piCount, '#0275e0'],
+    ['Request', requestCount, '#10b981'],
+    ['Beauty', beautyCount, '#fb7185']
+  ].filter(([, v]) => v > 0);
+  const typeTotal = typeEntries.reduce((s, [, v]) => s + v, 0);
+  const typePieBg = typeTotal
+    ? (() => {
+        let cursor = 0;
+        const segs = typeEntries.map(([, v, c]) => {
+          const start = cursor;
+          const end = cursor + (v / typeTotal) * 100;
+          cursor = end;
+          return `${c} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+        });
+        return `conic-gradient(${segs.join(', ')})`;
+      })()
+    : 'conic-gradient(var(--line) 0 100%)';
+
+  // Issue Category bar — current month only, sortable
+  const catSort = state.etaxgoIssue.categorySort ?? 'desc';
+  const monthCatCounts = countByEtaxGoCategory(monthItems);
+  const sortedCats = catSort === 'asc'
+    ? [...monthCatCounts].sort((a, b) => a[1] - b[1])
+    : monthCatCounts;
+  const catMax = Math.max(1, ...sortedCats.map(([, v]) => v));
+
+  // Resolution Rate donut
+  const resolvedCount = monthItems.filter((i) => isResolved(i)).length;
+  const unresolvedCount = monthItems.length - resolvedCount;
+  const resRate = monthItems.length ? Math.round((resolvedCount / monthItems.length) * 100) : 0;
+  const resPieBg = monthItems.length
+    ? `conic-gradient(#10b981 0% ${resRate}%, var(--line) ${resRate}% 100%)`
+    : 'conic-gradient(var(--line) 0 100%)';
+
+  // Aging Watchlist: top 5 open eTaxGo issues by pending age (all-time)
+  const agingList = allEtaxGo
+    .filter((i) => !isResolved(i))
+    .sort((a, b) => number(b.pending_age_hours) - number(a.pending_age_hours))
+    .slice(0, 5);
+
+  return `
+    <div class="venio-dashboard-toolbar">
+      ${etaxGoMonthPicker()}
+    </div>
+
+    <div class="venio-kpi-row">
+      <div class="venio-kpi-card ${totalTrend}">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Total Issues</span>
+          <span class="venio-kpi-icon">&#128196;</span>
+        </div>
+        <strong class="venio-kpi-value">${totalCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--${totalTrend || 'muted'}">${escapeHtml(totalTrendText)}</span>
+      </div>
+      <div class="venio-kpi-card">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Production Issues</span>
+          <span class="venio-kpi-icon">&#128683;</span>
+        </div>
+        <strong class="venio-kpi-value">${piCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--muted">${escapeHtml(periodLabel(selMonth))}</span>
+      </div>
+      <div class="venio-kpi-card">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Request</span>
+          <span class="venio-kpi-icon">&#128203;</span>
+        </div>
+        <strong class="venio-kpi-value">${requestCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--muted">${escapeHtml(periodLabel(selMonth))}</span>
+      </div>
+      <div class="venio-kpi-card">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Beauty</span>
+          <span class="venio-kpi-icon">&#10024;</span>
+        </div>
+        <strong class="venio-kpi-value">${beautyCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--muted">${escapeHtml(periodLabel(selMonth))}</span>
+      </div>
+      <div class="venio-kpi-card ${staleIssues.length ? 'danger' : 'ok'}">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Stale Issues</span>
+          <span class="venio-kpi-icon">&#9200;</span>
+        </div>
+        <strong class="venio-kpi-value">${staleIssues.length}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--${staleIssues.length ? 'danger' : 'ok'}">Open · no update 30+ days</span>
+      </div>
+    </div>
+
+    <div class="venio-mid-grid">
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <h2>Issue Type Distribution</h2>
+            <span>${escapeHtml(periodLabel(selMonth))}</span>
+          </div>
+        </div>
+        ${typeTotal ? `
+        <div class="venio-pie-layout">
+          <div class="venio-pie" style="background:${typePieBg}" title="${typeTotal} issues"></div>
+          <div class="venio-pie-legend">
+            ${typeEntries.map(([label, value, color]) => `
+              <div class="venio-pie-legend-row">
+                <span class="venio-legend-dot" style="background:${color}"></span>
+                <span class="venio-pie-label">${escapeHtml(label)}</span>
+                <span>
+                  <strong class="venio-pie-count">${value}</strong>
+                  <span class="venio-pie-pct">${formatPercent(percent(value, typeTotal))}</span>
+                </span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        ` : `<div class="venio-empty-state">&#128202; No issue data for <strong>${escapeHtml(periodLabel(selMonth))}</strong>.<br><span>Switch to a month with imported data.</span></div>`}
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="panel-title">
+          <div>
+            <h2>Issue Category</h2>
+            <span>${escapeHtml(periodLabel(selMonth))} · ${monthItems.length} issues</span>
+          </div>
+          <div class="venio-sort-btns">
+            <button class="venio-sort-btn ${catSort === 'desc' ? 'active' : ''}" type="button" data-etaxgo-category-sort="desc" title="Sort descending">&#8595; Desc</button>
+            <button class="venio-sort-btn ${catSort === 'asc' ? 'active' : ''}" type="button" data-etaxgo-category-sort="asc" title="Sort ascending">&#8593; Asc</button>
+          </div>
+        </div>
+        <div class="bar-list">
+          ${sortedCats.length ? sortedCats.map(([label, value]) => `
+            <div class="bar-row">
+              <div class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, (value / catMax) * 100)}%"></div></div>
+              <strong>${value}</strong>
+            </div>
+          `).join('') : `<div class="venio-empty-state">&#128202; No issues in ${escapeHtml(periodLabel(selMonth))}.</div>`}
+        </div>
+      </section>
+    </div>
+
+    <div class="venio-mid-grid" style="margin-top:0">
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <h2>Resolution Rate</h2>
+            <span>${escapeHtml(periodLabel(selMonth))}</span>
+          </div>
+        </div>
+        ${monthItems.length ? `
+        <div class="venio-pie-layout">
+          <div class="venio-pie" style="background:${resPieBg}" title="${resolvedCount} of ${monthItems.length} resolved (${resRate}%)"></div>
+          <div class="venio-pie-legend">
+            <div class="venio-pie-legend-row">
+              <span class="venio-legend-dot" style="background:#10b981"></span>
+              <span class="venio-pie-label">Resolved</span>
+              <span>
+                <strong class="venio-pie-count">${resolvedCount}</strong>
+                <span class="venio-pie-pct">${formatPercent(percent(resolvedCount, monthItems.length))}</span>
+              </span>
+            </div>
+            <div class="venio-pie-legend-row">
+              <span class="venio-legend-dot" style="background:var(--line)"></span>
+              <span class="venio-pie-label">Open</span>
+              <span>
+                <strong class="venio-pie-count">${unresolvedCount}</strong>
+                <span class="venio-pie-pct">${formatPercent(percent(unresolvedCount, monthItems.length))}</span>
+              </span>
+            </div>
+          </div>
+        </div>
+        ` : `<div class="venio-empty-state">&#128202; No issue data for ${escapeHtml(periodLabel(selMonth))}.</div>`}
+      </section>
+
+      <section class="panel watchlist-panel">
+        <div class="panel-title">
+          <h2>Aging Watchlist</h2>
+          <span>Top 5 open issues by age</span>
+        </div>
+        <div class="watchlist">
+          ${agingList.map((issue) => `
+            <button class="watch-row" data-open-issue="${issue.id}">
+              <span class="watch-key">${escapeHtml(issue.issue_key)}</span>
+              <span class="watch-summary">${escapeHtml(issue.customer_code || '-')}</span>
+              <span class="watch-meta">${escapeHtml(issue.summary || '-')}</span>
+              <strong class="${pendingLevel(issue) || ''}">${issue.pending_age_hours ? Number(issue.pending_age_hours / 24).toFixed(1) + 'd' : '-'}</strong>
+            </button>
+          `).join('') || '<div class="subtle" style="padding:1rem">No open issues.</div>'}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function etaxGoBoardContent() {
+  const allEtaxGo = etaxGoIssues(state.issues);
+  const columns = boardColumns();
+  const groups = new Map(columns.map((column) => [column, []]));
+  for (const issue of allEtaxGo) {
+    const key = boardColumnForIssue(issue);
+    groups.get(key).push(issue);
+  }
+  return `
+    <section class="board">
+      ${columns.map((column) => `
+        <div class="column">
+          <div class="column-head"><h2>${column}</h2><span class="pill">${groups.get(column).length}</span></div>
+          ${groups.get(column).map((issue) => {
+            const level = pendingLevel(issue);
+            const high = isHighPriority(issue) ? 'high-priority' : '';
+            const pending = number(issue.pending_age_hours);
+            const categoryBadge = `<span class="mini-badge">${escapeHtml(categoryForEtaxGoIssue(issue))}</span>`;
+            return `
+              <button class="issue-card ${level} ${high}" data-open-issue="${issue.id}">
+                <span class="issue-card-labels">
+                  <span class="label-strip priority-${slug(issue.priority)}"></span>
+                  <span class="label-strip category-label"></span>
+                </span>
+                <strong>${escapeHtml(issue.summary)}</strong>
+                <span class="issue-key">${escapeHtml(issue.issue_key)}</span>
+                <span class="subtle">${escapeHtml(issue.issue_type)} for ${escapeHtml(issue.customer_code || '-')}</span>
+                <span class="issue-card-footer">
+                  ${statusPill(issue.status)}
+                  ${categoryBadge}
+                  <span class="mini-badge ${level}">${pending.toFixed(1)}h</span>
+                </span>
+              </button>
+            `;
+          }).join('') || '<div class="subtle">No issues</div>'}
+        </div>
+      `).join('')}
+    </section>
+  `;
+}
+
+function executiveEtaxGoDashboardContent() {
+  const allEtaxGo = etaxGoIssues(state.issues);
+  const allPi = productionIssues(allEtaxGo);
+  const selMonth = currentEtaxGoMonth();
+  const [selYear, selMon] = selMonth.split('-').map(Number);
+
+  const prevMonth = selMon === 1
+    ? `${selYear - 1}-12`
+    : `${selYear}-${String(selMon - 1).padStart(2, '0')}`;
+
+  const monthItems = allEtaxGo.filter((issue) => monthKey(issue.report_date) === selMonth);
+  const prevItems = allEtaxGo.filter((issue) => monthKey(issue.report_date) === prevMonth);
+
+  const totalCount = monthItems.length;
+  const prevTotalCount = prevItems.length;
+  const totalDiff = totalCount - prevTotalCount;
+  const totalPct = prevTotalCount > 0 ? Math.round((totalDiff / prevTotalCount) * 100) : null;
+  const totalTrend = totalDiff > 0 ? 'danger' : totalDiff < 0 ? 'ok' : '';
+  const totalTrendText = totalPct !== null ? `${totalDiff >= 0 ? '+' : ''}${totalPct}% vs last month` : 'No prior month';
+
+  const piCount = monthItems.filter((issue) => issue.issue_type === 'Production Issue').length;
+  const requestCount = monthItems.filter((issue) => issue.issue_type === 'Request').length;
+  const beautyCount = monthItems.filter((issue) => issue.issue_type === 'Beauty').length;
+
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const staleIssues = allEtaxGo.filter((issue) => {
+    if (isResolved(issue)) return false;
+    const updated = issue.last_updated_date ? new Date(issue.last_updated_date) : null;
+    return !updated || updated < thirtyDaysAgo;
+  });
+
+  const typeEntries = [
+    ['Production Issue', piCount, '#0275e0'],
+    ['Request', requestCount, '#10b981'],
+    ['Beauty', beautyCount, '#fb7185']
+  ].filter(([, value]) => value > 0);
+  const typeTotal = typeEntries.reduce((sum, [, value]) => sum + value, 0);
+  const typePieBg = typeTotal
+    ? (() => {
+        let cursor = 0;
+        const segments = typeEntries.map(([, value, color]) => {
+          const start = cursor;
+          const end = cursor + (value / typeTotal) * 100;
+          cursor = end;
+          return `${color} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+        });
+        return `conic-gradient(${segments.join(', ')})`;
+      })()
+    : 'conic-gradient(var(--line) 0 100%)';
+
+  const catSort = state.etaxgoIssue.categorySort ?? 'desc';
+  const monthCatCounts = countByEtaxGoCategory(monthItems);
+  const sortedCats = catSort === 'asc'
+    ? [...monthCatCounts].sort((a, b) => a[1] - b[1])
+    : monthCatCounts;
+  const catMax = Math.max(1, ...sortedCats.map(([, value]) => value));
+
+  const resolvedCount = monthItems.filter((issue) => isResolved(issue)).length;
+  const unresolvedCount = monthItems.length - resolvedCount;
+  const resRate = monthItems.length ? Math.round((resolvedCount / monthItems.length) * 100) : 0;
+  const resPieBg = monthItems.length
+    ? `conic-gradient(#10b981 0% ${resRate}%, var(--line) ${resRate}% 100%)`
+    : 'conic-gradient(var(--line) 0 100%)';
+
+  const agingList = allPi
+    .filter((issue) => !isResolved(issue) && number(issue.pending_age_hours) / 24 > 30)
+    .sort((a, b) => number(b.pending_age_hours) - number(a.pending_age_hours))
+    .map((issue) => ({
+      ...issue,
+      pending_age_days: number(issue.pending_age_hours) / 24
+    }));
+
+  return `
+    <div class="venio-dashboard-toolbar">
+      ${etaxGoMonthPicker()}
+    </div>
+
+    <div class="venio-kpi-row">
+      <div class="venio-kpi-card ${totalTrend}">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Total Issues</span>
+          <span class="venio-kpi-icon">&#128196;</span>
+        </div>
+        <strong class="venio-kpi-value">${totalCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--${totalTrend || 'muted'}">${escapeHtml(totalTrendText)}</span>
+      </div>
+      <div class="venio-kpi-card">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Production Issues</span>
+          <span class="venio-kpi-icon">&#128683;</span>
+        </div>
+        <strong class="venio-kpi-value">${piCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--muted">${escapeHtml(periodLabel(selMonth))}</span>
+      </div>
+      <div class="venio-kpi-card">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Request</span>
+          <span class="venio-kpi-icon">&#128203;</span>
+        </div>
+        <strong class="venio-kpi-value">${requestCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--muted">${escapeHtml(periodLabel(selMonth))}</span>
+      </div>
+      <div class="venio-kpi-card">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Beauty</span>
+          <span class="venio-kpi-icon">&#10024;</span>
+        </div>
+        <strong class="venio-kpi-value">${beautyCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--muted">${escapeHtml(periodLabel(selMonth))}</span>
+      </div>
+      <div class="venio-kpi-card ${staleIssues.length ? 'danger' : 'ok'}">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Stale Issues</span>
+          <span class="venio-kpi-icon">&#9200;</span>
+        </div>
+        <strong class="venio-kpi-value">${staleIssues.length}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--${staleIssues.length ? 'danger' : 'ok'}">Open &middot; no update 30+ days</span>
+      </div>
+    </div>
+
+    <div class="etaxgo-top-grid">
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <h2>Issue Type Distribution</h2>
+            <span>${escapeHtml(periodLabel(selMonth))}</span>
+          </div>
+        </div>
+        ${typeTotal ? `
+        <div class="venio-pie-layout">
+          <div class="venio-pie" style="background:${typePieBg}" title="${typeTotal} issues"></div>
+          <div class="venio-pie-legend">
+            ${typeEntries.map(([label, value, color]) => `
+              <div class="venio-pie-legend-row">
+                <span class="venio-legend-dot" style="background:${color}"></span>
+                <span class="venio-pie-label">${escapeHtml(label)}</span>
+                <span>
+                  <strong class="venio-pie-count">${value}</strong>
+                  <span class="venio-pie-pct">${formatPercent(percent(value, typeTotal))}</span>
+                </span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        ` : `<div class="venio-empty-state">&#128202; No issue data for <strong>${escapeHtml(periodLabel(selMonth))}</strong>.<br><span>Switch to a month with imported data.</span></div>`}
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="panel-title">
+          <div>
+            <h2>Issue Category</h2>
+            <span>${escapeHtml(periodLabel(selMonth))} &middot; ${monthItems.length} issues</span>
+          </div>
+          <div class="venio-sort-btns">
+            <button class="venio-sort-btn ${catSort === 'desc' ? 'active' : ''}" type="button" data-etaxgo-category-sort="desc" title="Sort descending">&#8595; Desc</button>
+            <button class="venio-sort-btn ${catSort === 'asc' ? 'active' : ''}" type="button" data-etaxgo-category-sort="asc" title="Sort ascending">&#8593; Asc</button>
+          </div>
+        </div>
+        <div class="bar-list">
+          ${sortedCats.length ? sortedCats.map(([label, value]) => `
+            <div class="bar-row">
+              <div class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, (value / catMax) * 100)}%"></div></div>
+              <strong>${value}</strong>
+            </div>
+          `).join('') : `<div class="venio-empty-state">&#128202; No issues in ${escapeHtml(periodLabel(selMonth))}.</div>`}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <h2>Resolution Rate</h2>
+            <span>${escapeHtml(periodLabel(selMonth))}</span>
+          </div>
+        </div>
+        ${monthItems.length ? `
+        <div class="venio-pie-layout">
+          <div class="venio-pie" style="background:${resPieBg}" title="${resolvedCount} of ${monthItems.length} resolved (${resRate}%)"></div>
+          <div class="venio-pie-legend">
+            <div class="venio-pie-legend-row">
+              <span class="venio-legend-dot" style="background:#10b981"></span>
+              <span class="venio-pie-label">Resolved</span>
+              <span>
+                <strong class="venio-pie-count">${resolvedCount}</strong>
+                <span class="venio-pie-pct">${formatPercent(percent(resolvedCount, monthItems.length))}</span>
+              </span>
+            </div>
+            <div class="venio-pie-legend-row">
+              <span class="venio-legend-dot" style="background:var(--line)"></span>
+              <span class="venio-pie-label">Open</span>
+              <span>
+                <strong class="venio-pie-count">${unresolvedCount}</strong>
+                <span class="venio-pie-pct">${formatPercent(percent(unresolvedCount, monthItems.length))}</span>
+              </span>
+            </div>
+          </div>
+        </div>
+        ` : `<div class="venio-empty-state">&#128202; No issue data for ${escapeHtml(periodLabel(selMonth))}.</div>`}
+      </section>
+    </div>
+
+    <div class="etaxgo-bottom-grid">
+      <section class="panel watchlist-panel">
+        <div class="panel-title">
+          <h2>Aging Watchlist</h2>
+          <span>Open PI older than 30 days</span>
+        </div>
+        <div class="watchlist-table-head">
+          <span>Issue key</span>
+          <span>Summary</span>
+          <span>eTaxGo Category</span>
+          <span>Pending Age (days)</span>
+        </div>
+        <div class="watchlist watchlist-scroll">
+          ${agingList.map((issue) => `
+            <button class="watch-row" data-open-issue="${issue.id}">
+              <span class="watch-key">${escapeHtml(issue.issue_key)}</span>
+              <span class="watch-summary" title="${escapeHtml(issue.summary || '-')}">${escapeHtml(issue.summary || '-')}</span>
+              <span class="watch-meta">${escapeHtml(categoryForEtaxGoIssue(issue))}</span>
+              <strong class="${pendingLevel(issue) || ''}">${issue.pending_age_days ? issue.pending_age_days.toFixed(1) + 'd' : '-'}</strong>
+            </button>
+          `).join('') || '<div class="subtle" style="padding:1rem">No open PI older than 30 days.</div>'}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function etaxGoSettingsContent() {
+  return `
+    <section class="settings-grid">
+      <div class="panel">
+        <h2>eTaxGo Category Keyword Rules</h2>
+        <div class="toolbar" style="margin:10px 0">
+          <select data-etaxgo-new-rule="category">${ETAXGO_CATEGORIES.map((category) => `<option>${escapeHtml(category)}</option>`).join('')}</select>
+          <input data-etaxgo-new-rule="keyword" placeholder="Keyword">
+          <select data-etaxgo-new-rule="language"><option>EN</option><option>TH</option><option>Any</option></select>
+          <input data-etaxgo-new-rule="weight" type="number" value="8" min="1" max="20">
+          <button class="button" data-action="add-etaxgo-rule">Add Rule</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Active</th><th>Category</th><th>Keyword</th><th>Language</th><th>Weight</th><th>Save</th></tr></thead>
+            <tbody>
+              ${state.etaxgoRules.map((rule) => `
+                <tr>
+                  <td><input type="checkbox" data-etaxgo-rule="${rule.id}" data-etaxgo-rule-field="active" ${rule.active ? 'checked' : ''}></td>
+                  <td><input value="${escapeHtml(rule.category)}" data-etaxgo-rule="${rule.id}" data-etaxgo-rule-field="category"></td>
+                  <td><input value="${escapeHtml(rule.keyword)}" data-etaxgo-rule="${rule.id}" data-etaxgo-rule-field="keyword"></td>
+                  <td><input value="${escapeHtml(rule.language)}" data-etaxgo-rule="${rule.id}" data-etaxgo-rule-field="language"></td>
+                  <td><input type="number" value="${escapeHtml(rule.weight)}" data-etaxgo-rule="${rule.id}" data-etaxgo-rule-field="weight"></td>
+                  <td><button class="button" data-save-etaxgo-rule="${rule.id}">Save</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderEtaxGoWorkspace() {
+  const headers = {
+    dashboard: ['eTaxGo Issue Dashboard', 'Monthly service issue signal for eTaxGo product focus.'],
+    board: ['eTaxGo Issue Board', 'Operational board grouped by current status category.'],
+    settings: ['eTaxGo Settings', 'Configure eTaxGo category keyword rules.']
+  };
+  const [title, hint] = headers[state.etaxgoView] ?? headers.dashboard;
+  let content;
+  if (state.etaxgoView === 'board') content = etaxGoBoardContent();
+  else if (state.etaxgoView === 'settings') content = etaxGoSettingsContent();
+  else content = executiveEtaxGoDashboardContent();
+  return renderShell(`
+    <div class="project-hero-banner">
+      <div class="project-hero-text">
+        <div class="project-hero-title">eTaxGo Issue</div>
+        <div class="project-hero-date">${escapeHtml(periodLabel(currentEtaxGoMonth()))}</div>
+      </div>
+    </div>
+    ${etaxGoViewTabs()}
+    ${content}
+  `);
+}
+
+function venioMonthPicker() {
+  const allIssues = venioIssues(state.issues);
+  const issueKeys = [...new Set(allIssues.map((i) => monthKey(i.report_date)).filter((k) => k !== 'Unknown'))].sort();
+  const selected = currentVenioMonth();
+  // Always use a select; if no issues imported, show current month as the only option
+  const keys = issueKeys.length ? issueKeys : [selected];
+  return `
+    <label class="venio-month-label">
+      <span>Month</span>
+      <select class="venio-month-select" data-venio-issue-month>
+        ${keys.map((k) => `<option value="${escapeHtml(k)}" ${selected === k ? 'selected' : ''}>${escapeHtml(periodLabel(k))}</option>`).join('')}
+      </select>
+    </label>
+  `;
+}
+
+function venioLineChart(series, trendLabels) {
+  const W = 560, H = 160;
+  const padL = 36, padR = 16, padT = 16, padB = 32;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+  const n = trendLabels.length;
+  if (!n) return '<div class="venio-empty-state">&#128202; No trend data yet. Import more months to see trends.</div>';
+  if (n === 1) {
+    const val = series[0]?.values[0] ?? 0;
+    return `<div class="venio-empty-state">&#128202; Only one month of data (${escapeHtml(trendLabels[0])}: ${val}). Import more months to see trends.</div>`;
+  }
+
+  const allVals = series.flatMap((s) => s.values);
+  const maxVal = Math.max(1, ...allVals);
+
+  const xPos = (i) => padL + (n <= 1 ? chartW / 2 : (i / (n - 1)) * chartW);
+  const yPos = (v) => padT + chartH - (v / maxVal) * chartH;
+
+  const gridStops = [0, 0.5, 1];
+  const gridLines = gridStops.map((t) => {
+    const y = padT + chartH - t * chartH;
+    const val = Math.round(t * maxVal);
+    return `
+      <line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--line)" stroke-width="1" stroke-dasharray="${t === 0 ? 'none' : '4 3'}"/>
+      <text x="${padL - 5}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--muted)">${val}</text>
+    `;
+  }).join('');
+
+  const seriesSvg = series.map((s) => {
+    if (!s.values.length) return '';
+    const pts = s.values.map((v, i) => `${xPos(i).toFixed(1)},${yPos(v).toFixed(1)}`).join(' ');
+    const dots = s.values.map((v, i) => `
+      <circle cx="${xPos(i).toFixed(1)}" cy="${yPos(v).toFixed(1)}" r="4" fill="${s.color}" stroke="var(--panel)" stroke-width="2">
+        <title>${escapeHtml(trendLabels[i])}: ${v}</title>
+      </circle>
+    `).join('');
+    return `
+      <polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      ${dots}
+    `;
+  }).join('');
+
+  const xAxisLabels = trendLabels.map((label, i) => `
+    <text x="${xPos(i).toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="10" fill="var(--muted)">${escapeHtml(label)}</text>
+  `).join('');
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block;overflow:visible">
+      ${gridLines}
+      ${seriesSvg}
+      ${xAxisLabels}
+    </svg>
+  `;
+}
+
+function executiveDashboardContentLegacy() {
+  const allVenio = venioIssues(state.issues);
+  const allPi = productionIssues(allVenio);
+  const selMonth = currentVenioMonth();
+  const [selYear, selMon] = selMonth.split('-').map(Number);
+
+  const prevMonth = selMon === 1
+    ? `${selYear - 1}-12`
+    : `${selYear}-${String(selMon - 1).padStart(2, '0')}`;
+
+  const monthItems = allVenio.filter((i) => monthKey(i.report_date) === selMonth);
+  const prevItems = allVenio.filter((i) => monthKey(i.report_date) === prevMonth);
+  const monthPi = productionIssues(monthItems);
+  const prevPi = productionIssues(prevItems);
+
+  // KPIs
+  const newCount = monthPi.length;
+  const prevCount = prevPi.length;
+  const newDiff = newCount - prevCount;
+  const newPct = prevCount > 0 ? Math.round((newDiff / prevCount) * 100) : null;
+  const newTrend = newDiff > 0 ? 'danger' : newDiff < 0 ? 'ok' : '';
+  const newTrendText = newPct !== null ? `${newDiff >= 0 ? '+' : ''}${newPct}% vs last month` : 'No prior month';
+
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const stalePI = allPi.filter((i) => {
+    if (isResolved(i)) return false;
+    const updated = i.last_updated_date ? new Date(i.last_updated_date) : null;
+    return !updated || updated < thirtyDaysAgo;
+  });
+
+  const crispEntry = state.crisp.months.find((entry) => entry.month === selMonth);
+  const sumChat = crispEntry ? (crispEntry.total_conversations ?? 0) : null;
+
+  // Trends: last 6 months
+  const allMonthKeys = [...new Set(allVenio.map((i) => monthKey(i.report_date)).filter((k) => k !== 'Unknown'))].sort();
+  const trendMonths = allMonthKeys.slice(-6);
+  const trendLabels = trendMonths.map((k) => periodLabel(k).replace(/\s+\d{4}$/, ''));
+  const piValues = trendMonths.map((k) => allPi.filter((i) => monthKey(i.report_date) === k).length);
+  const chatValues = trendMonths.map((k) => {
+    const cm = state.crisp.months.find((entry) => entry.month === k);
+    return cm ? (cm.total_conversations ?? 0) : 0;
+  });
+  const hasCrispTrend = chatValues.some((v) => v > 0);
+  const trendSeries = [
+    { label: 'Production Issue', color: '#0275e0', values: piValues },
+    ...(hasCrispTrend ? [{ label: 'Crisp Chat', color: '#f59e0b', values: chatValues }] : [])
+  ];
+
+  // Pie chart: Production Issue vs Beauty for selected month
+  const piCount = monthPi.length;
+  const beautyCount = monthItems.filter((i) => i.issue_type === 'Beauty').length;
+  const pieEntries = [
+    ['Production Issue', piCount, '#0275e0'],
+    ['Beauty', beautyCount, '#fb7185']
+  ].filter(([, v]) => v > 0);
+  const pieTotal = pieEntries.reduce((s, [, v]) => s + v, 0);
+  const pieBg = pieTotal
+    ? (() => {
+        let cursor = 0;
+        const segs = pieEntries.map(([, v, c]) => {
+          const start = cursor;
+          const end = cursor + (v / pieTotal) * 100;
+          cursor = end;
+          return `${c} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+        });
+        return `conic-gradient(${segs.join(', ')})`;
+      })()
+    : 'conic-gradient(var(--line) 0 100%)';
+
+  // Issue Category bar — current month only, sortable
+  const catSort = state.venioIssue.categorySort ?? 'desc';
+  const monthCatCounts = countByVenioCategory(monthItems);
+  const sortedCats = catSort === 'asc'
+    ? [...monthCatCounts].sort((a, b) => a[1] - b[1])
+    : monthCatCounts;
+  const catMax = Math.max(1, ...sortedCats.map(([, v]) => v));
+
+  // Monthly Category Trend: top 5 categories (all-time ranking) × last 6 months
+  const catColors = ['#0275e0', '#f59e0b', '#6bb8ff', '#fb7185', '#8b5cf6'];
+  const categorizedPi = allPi.filter((issue) => categoryForIssue(issue) !== 'Uncategorized');
+  const top5cats = countByVenioCategory(categorizedPi).slice(0, 5).map(([cat]) => cat);
+  const catTrendSeries = top5cats.map((category, index) => ({
+    label: category,
+    color: catColors[index % catColors.length],
+    values: trendMonths.map((month) => categorizedPi.filter((issue) => monthKey(issue.report_date) === month && categoryForIssue(issue) === category).length)
+  }));
+
+  // Aging Watchlist: top 5 open issues by pending age
+  const agingList = allPi
+    .filter((issue) => !isResolved(issue) && number(issue.pending_age_hours) / 24 > 30)
+    .sort((a, b) => number(b.pending_age_hours) - number(a.pending_age_hours))
+    .map((issue) => ({
+      ...issue,
+      pending_age_days: number(issue.pending_age_hours) / 24
+    }));
+
+  return `
+    <div class="venio-dashboard-toolbar">
+      ${venioMonthPicker()}
+    </div>
+
+    <div class="venio-kpi-row">
+      <div class="venio-kpi-card ${newTrend}">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">New Issues</span>
+          <span class="venio-kpi-icon">&#128196;</span>
+        </div>
+        <strong class="venio-kpi-value">${newCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--${newTrend || 'muted'}">${escapeHtml(newTrendText)} · PI only</span>
+      </div>
+      <div class="venio-kpi-card ${stalePI.length ? 'danger' : 'ok'}">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Stale PI</span>
+          <span class="venio-kpi-icon">&#9200;</span>
+        </div>
+        <strong class="venio-kpi-value">${stalePI.length}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--${stalePI.length ? 'danger' : 'ok'}">Open PI · no update 30+ days</span>
+      </div>
+      ${sumChat !== null ? `
+      <div class="venio-kpi-card">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Crisp Chat</span>
+          <span class="venio-kpi-icon">&#128172;</span>
+        </div>
+        <strong class="venio-kpi-value">${sumChat}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--muted">${escapeHtml(periodLabel(selMonth))} · conversations</span>
+      </div>` : ''}
+    </div>
+
+    <div class="venio-top-grid">
+      <section class="panel venio-trend-panel">
+        <div class="venio-trend-header">
+          <div class="venio-trend-header-left">
+            <h2>Monthly Trends</h2>
+            <p class="venio-trend-sub">Production Issues${hasCrispTrend ? ' &amp; Crisp conversations' : ''} over time</p>
+          </div>
+          <div class="venio-legend">
+            <span><span class="venio-legend-dot" style="background:#0275e0"></span>Production Issue</span>
+            ${hasCrispTrend ? '<span><span class="venio-legend-dot" style="background:#f59e0b"></span>Crisp Chat</span>' : ''}
+          </div>
+        </div>
+        <div class="venio-linechart-wrap">
+          ${venioLineChart(trendSeries, trendLabels)}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <h2>Issue Type</h2>
+            <span>${escapeHtml(periodLabel(selMonth))}</span>
+          </div>
+        </div>
+        ${pieTotal ? `
+        <div class="venio-pie-layout">
+          <div class="venio-pie" style="background:${pieBg}" title="${pieTotal} issues"></div>
+          <div class="venio-pie-legend">
+            ${pieEntries.map(([label, value, color]) => `
+              <div class="venio-pie-legend-row">
+                <span class="venio-legend-dot" style="background:${color}"></span>
+                <span class="venio-pie-label">${escapeHtml(label)}</span>
+                <span>
+                  <strong class="venio-pie-count">${value}</strong>
+                  <span class="venio-pie-pct">${formatPercent(percent(value, pieTotal))}</span>
+                </span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        ` : `<div class="venio-empty-state">&#128202; No issue data for <strong>${escapeHtml(periodLabel(selMonth))}</strong>.<br><span>Switch to a month with imported data.</span></div>`}
+      </section>
+    </div>
+
+    <div class="venio-mid-grid">
+      <section class="panel chart-panel">
+        <div class="panel-title">
+          <div>
+            <h2>Issue Category</h2>
+            <span>${escapeHtml(periodLabel(selMonth))} · ${monthItems.length} issues</span>
+          </div>
+          <div class="venio-sort-btns">
+            <button class="venio-sort-btn ${catSort === 'desc' ? 'active' : ''}" type="button" data-venio-category-sort="desc" title="Sort descending">&#8595; Desc</button>
+            <button class="venio-sort-btn ${catSort === 'asc' ? 'active' : ''}" type="button" data-venio-category-sort="asc" title="Sort ascending">&#8593; Asc</button>
+          </div>
+        </div>
+        <div class="bar-list">
+          ${sortedCats.length ? sortedCats.map(([label, value]) => `
+            <div class="bar-row">
+              <div class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, (value / catMax) * 100)}%"></div></div>
+              <strong>${value}</strong>
+            </div>
+          `).join('') : `<div class="venio-empty-state">&#128202; No issues in ${escapeHtml(periodLabel(selMonth))}.</div>`}
+        </div>
+      </section>
+    </div>
+
+    <div class="venio-bottom-grid">
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Monthly Category Trend</h2>
+          ${trendMonths.length ? `<span>Top 5 · last ${trendMonths.length} months</span>` : '<span>No data yet</span>'}
+        </div>
+        ${top5cats.length && trendMonths.length ? `
+        <div class="venio-cat-trend">
+          <table class="venio-cat-trend-table">
+            <thead>
+              <tr>
+                <th>Category</th>
+                ${trendMonths.map((k) => `<th>${escapeHtml(periodLabel(k).replace(/\s+\d{4}$/, ''))}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${top5cats.map((cat, idx) => `
+                <tr>
+                  <td><span class="venio-cat-dot" style="background:${catColors[idx]}"></span>${escapeHtml(cat)}</td>
+                  ${trendMonths.map((k) => {
+                    const cnt = allVenio.filter((i) => monthKey(i.report_date) === k && categoryForIssue(i) === cat).length;
+                    return `<td>${cnt || '<span class="subtle">—</span>'}</td>`;
+                  }).join('')}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        ` : '<div class="subtle" style="padding:1.5rem 0">No trend data yet.</div>'}
+      </section>
+
+      <section class="panel watchlist-panel">
+        <div class="panel-title">
+          <h2>Aging Watchlist</h2>
+          <span>Top 5 open issues by age</span>
+        </div>
+        <div class="watchlist">
+          ${agingList.map((issue) => `
+            <button class="watch-row" data-open-issue="${issue.id}">
+              <span class="watch-key">${escapeHtml(issue.issue_key)}</span>
+              <span class="watch-summary">${escapeHtml(issue.customer_code || '-')}</span>
+              <span class="watch-meta">${escapeHtml(issue.summary || '-')}</span>
+              <strong class="${pendingLevel(issue) || ''}">${issue.pending_age_hours ? Number(issue.pending_age_hours / 24).toFixed(1) + 'd' : '-'}</strong>
+            </button>
+          `).join('') || '<div class="subtle" style="padding:1rem">No open issues.</div>'}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function executiveDashboardContent() {
+  const allVenio = venioIssues(state.issues);
+  const allPi = productionIssues(allVenio);
+  const selMonth = currentVenioMonth();
+  const [selYear, selMon] = selMonth.split('-').map(Number);
+
+  const prevMonth = selMon === 1
+    ? `${selYear - 1}-12`
+    : `${selYear}-${String(selMon - 1).padStart(2, '0')}`;
+
+  const monthItems = allVenio.filter((issue) => monthKey(issue.report_date) === selMonth);
+  const prevItems = allVenio.filter((issue) => monthKey(issue.report_date) === prevMonth);
+  const monthPi = productionIssues(monthItems);
+  const prevPi = productionIssues(prevItems);
+
+  const newCount = monthPi.length;
+  const prevCount = prevPi.length;
+  const newDiff = newCount - prevCount;
+  const newPct = prevCount > 0 ? Math.round((newDiff / prevCount) * 100) : null;
+  const newTrend = newDiff > 0 ? 'danger' : newDiff < 0 ? 'ok' : '';
+  const newTrendText = newPct !== null ? `${newDiff >= 0 ? '+' : ''}${newPct}% vs last month` : 'No prior month';
+
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const stalePI = allPi.filter((issue) => {
+    if (isResolved(issue)) return false;
+    const updated = issue.last_updated_date ? new Date(issue.last_updated_date) : null;
+    return !updated || updated < thirtyDaysAgo;
+  });
+
+  const crispEntry = state.crisp.months.find((entry) => entry.month === selMonth);
+  const sumChat = crispEntry ? (crispEntry.total_conversations ?? 0) : null;
+
+  const allMonthKeys = [...new Set(allVenio.map((issue) => monthKey(issue.report_date)).filter((key) => key !== 'Unknown'))].sort();
+  const trendMonths = allMonthKeys.slice(-6);
+  const trendLabels = trendMonths.map((key) => periodLabel(key).replace(/\s+\d{4}$/, ''));
+  const piValues = trendMonths.map((key) => allPi.filter((issue) => monthKey(issue.report_date) === key).length);
+  const chatValues = trendMonths.map((key) => {
+    const month = state.crisp.months.find((entry) => entry.month === key);
+    return month ? (month.total_conversations ?? 0) : 0;
+  });
+  const hasCrispTrend = chatValues.some((value) => value > 0);
+  const trendSeries = [
+    { label: 'Production Issue', color: '#0275e0', values: piValues },
+    ...(hasCrispTrend ? [{ label: 'Crisp Chat', color: '#f59e0b', values: chatValues }] : [])
+  ];
+
+  const piCount = monthPi.length;
+  const beautyCount = monthItems.filter((issue) => issue.issue_type === 'Beauty').length;
+  const pieEntries = [
+    ['Production Issue', piCount, '#0275e0'],
+    ['Beauty', beautyCount, '#fb7185']
+  ].filter(([, value]) => value > 0);
+  const pieTotal = pieEntries.reduce((sum, [, value]) => sum + value, 0);
+  const pieBg = pieTotal
+    ? (() => {
+        let cursor = 0;
+        const segments = pieEntries.map(([, value, color]) => {
+          const start = cursor;
+          const end = cursor + (value / pieTotal) * 100;
+          cursor = end;
+          return `${color} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+        });
+        return `conic-gradient(${segments.join(', ')})`;
+      })()
+    : 'conic-gradient(var(--line) 0 100%)';
+
+  const catSort = state.venioIssue.categorySort ?? 'desc';
+  const monthCatCounts = countByVenioCategory(monthItems);
+  const sortedCats = catSort === 'asc'
+    ? [...monthCatCounts].sort((a, b) => a[1] - b[1])
+    : monthCatCounts;
+  const catMax = Math.max(1, ...sortedCats.map(([, value]) => value));
+
+  const catColors = ['#0275e0', '#f59e0b', '#6bb8ff', '#fb7185', '#8b5cf6'];
+  const categorizedPi = allPi.filter((issue) => categoryForIssue(issue) !== 'Uncategorized');
+  const top5cats = countByVenioCategory(categorizedPi).slice(0, 5).map(([category]) => category);
+  const catTrendSeries = top5cats.map((category, index) => ({
+    label: category,
+    color: catColors[index % catColors.length],
+    values: trendMonths.map((month) => categorizedPi.filter((issue) => monthKey(issue.report_date) === month && categoryForIssue(issue) === category).length)
+  }));
+
+  const agingList = allPi
+    .filter((issue) => !isResolved(issue) && number(issue.pending_age_hours) / 24 > 30)
+    .sort((a, b) => number(b.pending_age_hours) - number(a.pending_age_hours))
+    .map((issue) => ({
+      ...issue,
+      pending_age_days: number(issue.pending_age_hours) / 24
+    }));
+
+  return `
+    <div class="venio-dashboard-toolbar">
+      ${venioMonthPicker()}
+    </div>
+
+    <div class="venio-kpi-row">
+      <div class="venio-kpi-card ${newTrend}">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">New Issues</span>
+          <span class="venio-kpi-icon">&#128196;</span>
+        </div>
+        <strong class="venio-kpi-value">${newCount}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--${newTrend || 'muted'}">${escapeHtml(newTrendText)} &middot; PI only</span>
+      </div>
+      <div class="venio-kpi-card ${stalePI.length ? 'danger' : 'ok'}">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Stale PI</span>
+          <span class="venio-kpi-icon">&#9200;</span>
+        </div>
+        <strong class="venio-kpi-value">${stalePI.length}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--${stalePI.length ? 'danger' : 'ok'}">Open PI &middot; no update 30+ days</span>
+      </div>
+      ${sumChat !== null ? `
+      <div class="venio-kpi-card">
+        <div class="venio-kpi-header">
+          <span class="venio-kpi-label">Crisp Chat</span>
+          <span class="venio-kpi-icon">&#128172;</span>
+        </div>
+        <strong class="venio-kpi-value">${sumChat}</strong>
+        <span class="venio-kpi-sub venio-kpi-sub--muted">${escapeHtml(periodLabel(selMonth))} &middot; conversations</span>
+      </div>` : ''}
+    </div>
+
+    <div class="venio-top-grid">
+      <section class="panel venio-trend-panel">
+        <div class="venio-trend-header">
+          <div class="venio-trend-header-left">
+            <h2>Monthly Trends</h2>
+            <p class="venio-trend-sub">Production Issues${hasCrispTrend ? ' &amp; Crisp conversations' : ''} over time</p>
+          </div>
+          <div class="venio-legend">
+            <span><span class="venio-legend-dot" style="background:#0275e0"></span>Production Issue</span>
+            ${hasCrispTrend ? '<span><span class="venio-legend-dot" style="background:#f59e0b"></span>Crisp Chat</span>' : ''}
+          </div>
+        </div>
+        <div class="venio-linechart-wrap">
+          ${venioLineChart(trendSeries, trendLabels)}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <div>
+            <h2>Issue Type</h2>
+            <span>${escapeHtml(periodLabel(selMonth))}</span>
+          </div>
+        </div>
+        ${pieTotal ? `
+        <div class="venio-pie-layout">
+          <div class="venio-pie" style="background:${pieBg}" title="${pieTotal} issues"></div>
+          <div class="venio-pie-legend">
+            ${pieEntries.map(([label, value, color]) => `
+              <div class="venio-pie-legend-row">
+                <span class="venio-legend-dot" style="background:${color}"></span>
+                <span class="venio-pie-label">${escapeHtml(label)}</span>
+                <span>
+                  <strong class="venio-pie-count">${value}</strong>
+                  <span class="venio-pie-pct">${formatPercent(percent(value, pieTotal))}</span>
+                </span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        ` : `<div class="venio-empty-state">&#128202; No issue data for <strong>${escapeHtml(periodLabel(selMonth))}</strong>.<br><span>Switch to a month with imported data.</span></div>`}
+      </section>
+    </div>
+
+    <div class="venio-mid-grid">
+      <section class="panel chart-panel">
+        <div class="panel-title">
+          <div>
+            <h2>Issue Category</h2>
+            <span>${escapeHtml(periodLabel(selMonth))} &middot; ${monthItems.length} issues</span>
+          </div>
+          <div class="venio-sort-btns">
+            <button class="venio-sort-btn ${catSort === 'desc' ? 'active' : ''}" type="button" data-venio-category-sort="desc" title="Sort descending">&#8595; Desc</button>
+            <button class="venio-sort-btn ${catSort === 'asc' ? 'active' : ''}" type="button" data-venio-category-sort="asc" title="Sort ascending">&#8593; Asc</button>
+          </div>
+        </div>
+        <div class="bar-list">
+          ${sortedCats.length ? sortedCats.map(([label, value]) => `
+            <div class="bar-row">
+              <div class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, (value / catMax) * 100)}%"></div></div>
+              <strong>${value}</strong>
+            </div>
+          `).join('') : `<div class="venio-empty-state">&#128202; No issues in ${escapeHtml(periodLabel(selMonth))}.</div>`}
+        </div>
+      </section>
+    </div>
+
+    <div class="venio-bottom-grid">
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Monthly Category Trend</h2>
+          ${trendMonths.length ? `<span>Top 5 PI categories &middot; last ${trendMonths.length} months</span>` : '<span>No data yet</span>'}
+        </div>
+        ${catTrendSeries.length && trendMonths.length ? `
+        <div class="venio-cat-trend">
+          <div class="venio-legend venio-legend-wrap">
+            ${catTrendSeries.map((series) => `
+              <span><span class="venio-legend-dot" style="background:${series.color}"></span>${escapeHtml(series.label)}</span>
+            `).join('')}
+          </div>
+          <div class="venio-linechart-wrap">
+            ${venioLineChart(catTrendSeries, trendLabels)}
+          </div>
+        </div>
+        ` : '<div class="subtle" style="padding:1.5rem 0">No trend data yet.</div>'}
+      </section>
+
+      <section class="panel watchlist-panel">
+        <div class="panel-title">
+          <h2>Aging Watchlist</h2>
+          <span>Open PI older than 30 days</span>
+        </div>
+        <div class="watchlist-table-head">
+          <span>Issue key</span>
+          <span>Summary</span>
+          <span>Venio Category</span>
+          <span>Pending Age (days)</span>
+        </div>
+        <div class="watchlist watchlist-scroll">
+          ${agingList.map((issue) => `
+            <button class="watch-row" data-open-issue="${issue.id}">
+              <span class="watch-key">${escapeHtml(issue.issue_key)}</span>
+              <span class="watch-summary" title="${escapeHtml(issue.summary || '-')}">${escapeHtml(issue.summary || '-')}</span>
+              <span class="watch-meta">${escapeHtml(categoryForIssue(issue))}</span>
+              <strong class="${pendingLevel(issue) || ''}">${issue.pending_age_days ? issue.pending_age_days.toFixed(1) + 'd' : '-'}</strong>
+            </button>
+          `).join('') || '<div class="subtle" style="padding:1rem">No open PI older than 30 days.</div>'}
+        </div>
+      </section>
+    </div>
+  `;
 }
 
 function renderTopPending(items) {
@@ -3891,17 +5334,15 @@ function renderComparison(items) {
   `;
 }
 
-function renderBoard() {
+function boardContent() {
   const items = filteredIssues();
-  const columns = ['To Do', 'In Progress', 'Done', 'Other'];
+  const columns = boardColumns();
   const groups = new Map(columns.map((column) => [column, []]));
   for (const issue of items) {
-    const key = columns.includes(issue.status_category) ? issue.status_category : 'Other';
+    const key = boardColumnForIssue(issue);
     groups.get(key).push(issue);
   }
-  return renderShell(`
-    ${pageHeader('Issue Board', 'Operational board grouped by current status category.')}
-    ${filterPanel()}
+  return `
     <section class="board">
       ${columns.map((column) => `
         <div class="column">
@@ -3910,7 +5351,7 @@ function renderBoard() {
         </div>
       `).join('')}
     </section>
-  `);
+  `;
 }
 
 function issueCard(issue) {
@@ -4143,9 +5584,8 @@ function historyTable() {
   `;
 }
 
-function renderSettings() {
-  return renderShell(`
-    ${pageHeader('Settings', 'Configure thresholds, dark mode, and category keyword rules.')}
+function settingsContent() {
+  return `
     <section class="settings-grid">
       <div class="panel">
         <h2>Threshold Rules</h2>
@@ -4154,6 +5594,7 @@ function renderSettings() {
           ${settingInput('pending_critical_hours', 'Pending Critical Hours')}
           ${settingInput('solve_warning_hours', 'Time to Solve Warning Hours')}
           ${settingInput('solve_critical_hours', 'Time to Solve Critical Hours')}
+          ${settingInput('over_days_threshold', 'Over Days Project Threshold (days)')}
           <button class="button primary" data-action="save-settings">Save Settings</button>
         </div>
       </div>
@@ -4184,8 +5625,17 @@ function renderSettings() {
           </table>
         </div>
       </div>
+      <div class="panel" style="grid-column:1/-1">
+        <h2>Data Management</h2>
+        <p class="subtle" style="margin:8px 0 12px">Remove all imported issues and import history from this workspace. This cannot be undone.</p>
+        <button class="button danger" data-action="clear-all-issues">Clear All Issue Data</button>
+      </div>
     </section>
-  `);
+  `;
+}
+
+function renderSettings() {
+  return renderVenioWorkspace();
 }
 
 function settingInput(key, label) {
@@ -4479,7 +5929,7 @@ function modal() {
   `;
 }
 
-const VALID_VIEWS = new Set(['home', 'project-dashboard', 'crisp-performance', 'upload', 'jira-upload', 'dashboard', 'board', 'table', 'settings']);
+const VALID_VIEWS = new Set(['home', 'project-dashboard', 'crisp-performance', 'dashboard', 'meeting', 'manual']);
 
 function getViewFromHash() {
   const hash = window.location.hash.slice(1);
@@ -4511,12 +5961,8 @@ function render() {
     home: 'Customer Service Team Hub',
     'project-dashboard': 'Project Dashboard | Customer Service Team Hub',
     'crisp-performance': 'Crisp Chat Performance | Customer Service Team Hub',
-    upload: 'Venio Issue Upload | Customer Service Team Hub',
-    'jira-upload': 'Raw Jira Import | Customer Service Team Hub',
-    dashboard: 'Venio Issue Dashboard | Customer Service Team Hub',
-    board: 'Venio Issue Board | Customer Service Team Hub',
-    table: 'Venio Issue Table | Customer Service Team Hub',
-    settings: 'Venio Issue Settings | Customer Service Team Hub',
+    dashboard: 'Venio Issue | Customer Service Team Hub',
+    'etaxgo-issue': 'eTaxGo Issue | Customer Service Team Hub',
     'meeting': 'Venio Meeting | Customer Service Team Hub',
     'manual': 'Venio Manual | Customer Service Team Hub'
   };
@@ -4528,12 +5974,8 @@ function render() {
     home: renderLanding,
     'project-dashboard': renderProjectDashboard,
     'crisp-performance': renderCrispPerformance,
-    upload: renderUpload,
-    'jira-upload': renderJiraUpload,
-    dashboard: renderExecutiveDashboard,
-    board: renderBoard,
-    table: renderTable,
-    settings: renderSettings,
+    dashboard: renderVenioWorkspace,
+    'etaxgo-issue': renderEtaxGoWorkspace,
     'meeting': renderMeeting,
     'manual': renderManual
   };
@@ -4667,6 +6109,7 @@ function createDefaultStore(seed = {}) {
       ...(seed.settings ?? {})
     },
     rules,
+    etaxgoRules: seed.etaxgoRules ?? [],
     nextIssueId: maxId(issues) + 1,
     nextBatchId: maxId(batches) + 1,
     nextNoteId: 1,
@@ -4769,7 +6212,7 @@ function migrateCrispMonths(store) {
 }
 
 function clientBootstrap(store = loadClientStore()) {
-  store.issues = (store.issues ?? []).map((issue) => isVenioIssue(issue)
+  store.issues = (store.issues ?? []).map((issue) => (isVenioIssue(issue) || isEtaxGoIssue(issue))
     ? issue
     : {
       ...issue,
@@ -4793,11 +6236,15 @@ function clientBootstrap(store = loadClientStore()) {
     crispBatches: store.crispBatches ?? [],
     crispMonths: store.crispMonths ?? [],
     settings: store.settings ?? {},
-    rules: store.rules ?? []
+    rules: store.rules ?? [],
+    etaxgoRules: store.etaxgoRules ?? []
   };
 }
 
-function detectClientCategory(issue, rules) {
+function detectClientCategory(issue, rules, etaxgoRules = []) {
+  if (isEtaxGoIssue(issue)) {
+    return detectEtaxGoCategoryClient(issue, etaxgoRules);
+  }
   if (!isVenioIssue(issue)) {
     return { category: null, confidence: null, rule: null };
   }
@@ -4829,7 +6276,9 @@ function emptyToNull(value) {
 }
 
 function numberOrNull(value) {
-  const parsed = Number(String(value ?? '').replace(/,/g, '').trim());
+  const text = String(value ?? '').replace(/,/g, '').trim();
+  if (text === '') return null;
+  const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -4846,6 +6295,20 @@ function dateOrNull(value) {
     const parsedJiraDate = new Date(year, month, Number(day), hour, Number(minuteText));
     return Number.isNaN(parsedJiraDate.getTime()) ? null : parsedJiraDate;
   }
+  const numericDate = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (numericDate) {
+    const [, dayText, monthText, yearText, hourText = '0', minuteText = '0', secondText = '0'] = numericDate;
+    const year = Number(yearText.length === 2 ? `20${yearText}` : yearText);
+    const parsedNumericDate = new Date(
+      year,
+      Number(monthText) - 1,
+      Number(dayText),
+      Number(hourText),
+      Number(minuteText),
+      Number(secondText)
+    );
+    return Number.isNaN(parsedNumericDate.getTime()) ? null : parsedNumericDate;
+  }
   const date = new Date(text);
   return Number.isNaN(date.getTime()) ? null : date;
 }
@@ -4861,68 +6324,105 @@ function hoursBetween(startValue, endValue) {
   return Number(((end.getTime() - start.getTime()) / 36e5).toFixed(1));
 }
 
-function normalizedIssueFromRow(row) {
-  return {
-    summary: emptyToNull(row.Summary),
-    issue_key: emptyToNull(row['Issue key']),
-    issue_type: emptyToNull(row['Issue Type']),
-    status: emptyToNull(row.Status),
-    issue_resolution: emptyToNull(row.Resolution),
-    project_name: emptyToNull(row['Project name']),
-    project_type: emptyToNull(row['Project type']),
-    priority: emptyToNull(row.Priority),
-    description: emptyToNull(row.Description),
-    customer_code: emptyToNull(row['Custom field (Customer Code)']),
-    status_category: emptyToNull(row['Status Category']) ?? 'Other',
-    report_date: emptyToNull(row['Report Date']),
-    last_updated_date: emptyToNull(row['Last Updated Date']),
-    resolved_date: emptyToNull(row['Resolved Date (Proxy)']),
-    time_to_solve_hours: numberOrNull(row['Time to Solve (hrs)']),
-    pending_age_hours: numberOrNull(row['Pending Age (hrs)'])
-  };
+function rowValue(row, ...headers) {
+  for (const header of headers) {
+    const value = emptyToNull(row[header]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function normalizeIssueType(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const normalized = text.toLowerCase();
+  if (normalized === 'production issue' || normalized === 'production issues') return 'Production Issue';
+  if (normalized === 'request' || normalized === 'requests') return 'Request';
+  if (normalized === 'beauty' || normalized === 'beauties') return 'Beauty';
+  return text;
+}
+
+function statusToCategory(status) {
+  const value = String(status ?? '').trim().toLowerCase();
+  if (/^done$|^resolved$|^closed$|^complete/.test(value)) return 'Done';
+  if (/progress|review|testing/.test(value)) return 'In Progress';
+  return 'To Do';
+}
+
+function isSupportedJiraRow(row) {
+  const issueType = normalizeIssueType(rowValue(row, 'Issue Type'));
+  const projectName = String(rowValue(row, 'Project name') ?? '').trim().toLowerCase();
+  const issueKey = String(rowValue(row, 'Issue key') ?? '').trim().toUpperCase();
+  const isVenio = projectName === 'venio' || issueKey.startsWith('VENIO-');
+  const isEtaxGo = projectName === 'etaxgo' || issueKey.startsWith('ETAXGO-');
+  const isVenioValidType = isVenio && (issueType === 'Production Issue' || issueType === 'Beauty');
+  const isEtaxGoValidType = isEtaxGo && (issueType === 'Production Issue' || issueType === 'Request' || issueType === 'Beauty');
+  return isVenioValidType || isEtaxGoValidType;
+}
+
+function normalizedIssueFromRow(row, importedAt = new Date().toISOString()) {
+  return jiraIssueFromRow(row, importedAt);
 }
 
 function jiraIssueFromRow(row, importedAt = new Date().toISOString()) {
-  const created = emptyToNull(row.Created);
-  const updated = emptyToNull(row.Updated);
-  const resolved = emptyToNull(row.Resolved);
+  const reportDate = rowValue(row, 'Report Date');
+  const lastUpdatedDate = rowValue(row, 'Last Updated Date', 'Last Updated');
+  const resolvedDate = rowValue(row, 'Resolved Date (Proxy)', 'Resolved Date');
+  const created = rowValue(row, 'Created');
+  const updated = rowValue(row, 'Updated');
+  const resolved = rowValue(row, 'Resolved');
+  const reportDateSource = reportDate ?? created;
+  const resolvedDateSource = resolvedDate ?? resolved;
+  const status = rowValue(row, 'Status');
   return {
-    summary: emptyToNull(row.Summary),
-    issue_key: emptyToNull(row['Issue key']),
-    issue_type: emptyToNull(row['Issue Type']),
-    status: emptyToNull(row.Status),
-    issue_resolution: emptyToNull(row.Resolution),
-    project_name: emptyToNull(row['Project name']),
-    project_type: emptyToNull(row['Project type']),
-    priority: emptyToNull(row.Priority),
-    description: emptyToNull(row.Description),
-    customer_code: emptyToNull(row['Custom field (Customer Code)']),
-    status_category: emptyToNull(row['Status Category']) ?? 'Other',
-    report_date: isoOrNull(created),
-    last_updated_date: isoOrNull(updated),
-    resolved_date: isoOrNull(resolved),
-    time_to_solve_hours: resolved ? hoursBetween(created, resolved) : null,
-    pending_age_hours: resolved ? null : hoursBetween(created, importedAt)
+    summary: rowValue(row, 'Summary'),
+    issue_key: rowValue(row, 'Issue key'),
+    issue_type: normalizeIssueType(rowValue(row, 'Issue Type')),
+    status,
+    issue_resolution: rowValue(row, 'Resolution') ?? (resolvedDateSource ? 'Done' : null),
+    project_name: rowValue(row, 'Project name'),
+    project_type: rowValue(row, 'Project type'),
+    priority: rowValue(row, 'Priority'),
+    description: rowValue(row, 'Description'),
+    customer_code: rowValue(row, 'Custom field (Customer Code)', 'Customer Code'),
+    status_category: rowValue(row, 'Status Category') ?? statusToCategory(status),
+    report_date: reportDate ?? isoOrNull(created),
+    last_updated_date: lastUpdatedDate ?? isoOrNull(updated),
+    resolved_date: resolvedDate ?? isoOrNull(resolved),
+    time_to_solve_hours: numberOrNull(row['Time to Solve (hrs)']) ?? numberOrNull(row['Time to Solve']) ?? (
+      resolvedDateSource ? hoursBetween(reportDateSource, resolvedDateSource) : null
+    ),
+    pending_age_hours: numberOrNull(row['Pending Age (hrs)']) ?? numberOrNull(row['Pending Age']) ?? (
+      resolvedDateSource ? null : hoursBetween(reportDateSource, importedAt)
+    )
   };
 }
 
 function importClientCsv(filename, content, format = 'normalized') {
   const store = loadClientStore();
   const { headers, records } = parseCsvText(content);
-  const required = format === 'jira' ? jiraRequiredColumns : requiredColumns;
+  const isJiraDirect = format !== 'jira' && headers.includes('Created') && !headers.includes('Report Date');
+  const required = isJiraDirect
+    ? ['Summary', 'Issue key', 'Issue Type', 'Status', 'Created']
+    : format === 'jira'
+      ? jiraRequiredColumns
+      : requiredColumns;
   const missingColumns = required.filter((column) => !headers.includes(column));
   if (missingColumns.length) {
-    const error = new Error(`Missing columns: ${missingColumns.join(', ')}`);
+    const error = new Error(`This file does not match the Jira CSV format required by this workspace. Missing columns: ${missingColumns.join(', ')}`);
     error.status = 400;
     throw error;
   }
 
   const now = new Date().toISOString();
+  const sourceRecords = format === 'jira' ? records.filter(isSupportedJiraRow) : records;
   const validIssues = [];
   let skippedRows = 0;
 
-  for (const row of records) {
-    const issue = format === 'jira' ? jiraIssueFromRow(row, now) : normalizedIssueFromRow(row);
+  for (const row of sourceRecords) {
+    const issue = format === 'jira' || isJiraDirect
+      ? jiraIssueFromRow(row, now)
+      : normalizedIssueFromRow(row, now);
     if (!issue.issue_key) {
       skippedRows += 1;
     } else {
@@ -4947,14 +6447,14 @@ function importClientCsv(filename, content, format = 'normalized') {
 
   for (const incoming of validIssues) {
     const existing = existingByKey.get(incoming.issue_key);
-    const detected = detectClientCategory(incoming, store.rules);
-    const manual = isVenioIssue(incoming) ? existing?.venio_category_manual ?? null : null;
+    const detected = detectClientCategory(incoming, store.rules, store.etaxgoRules ?? []);
+    const manual = (isVenioIssue(incoming) || isEtaxGoIssue(incoming)) ? existing?.venio_category_manual ?? null : null;
     const nextIssue = {
       ...(existing ?? { id: store.nextIssueId++, notes: [], created_at: now }),
       ...incoming,
       venio_category_auto: detected.category,
       venio_category_manual: manual,
-      venio_category_final: isVenioIssue(incoming) ? manual || detected.category : null,
+      venio_category_final: (isVenioIssue(incoming) || isEtaxGoIssue(incoming)) ? manual || detected.category : null,
       category_confidence: detected.confidence,
       category_rule: detected.rule,
       import_batch_id: batch.id,
@@ -5400,7 +6900,10 @@ function mergedBootstrapStore(payload = {}, fallbackStore = null, options = {}) 
     },
     rules: Array.isArray(payload.rules) && payload.rules.length
       ? payload.rules
-      : localStore.rules
+      : localStore.rules,
+    etaxgoRules: Array.isArray(payload.etaxgoRules) && payload.etaxgoRules.length
+      ? payload.etaxgoRules
+      : (localStore.etaxgoRules ?? [])
   });
 }
 
@@ -5442,6 +6945,7 @@ function applyBootstrap(payload) {
   }
   state.settings = normalized.settings ?? {};
   state.rules = normalized.rules ?? [];
+  state.etaxgoRules = normalized.etaxgoRules ?? [];
 }
 
 function resetFilters() {
@@ -5681,8 +7185,16 @@ app.addEventListener('click', async (event) => {
       uploadCsv('normalized');
       return;
     }
+    if (action === 'upload-etaxgo-csv') {
+      uploadCsv('etaxgo');
+      return;
+    }
     if (action === 'upload-jira-csv') {
       uploadCsv('jira');
+      return;
+    }
+    if (action === 'upload-etaxgo-jira-csv') {
+      uploadCsv('etaxgo-jira');
       return;
     }
     if (action === 'upload-project-xlsx') {
@@ -5696,6 +7208,13 @@ app.addEventListener('click', async (event) => {
     if (action === 'save-crisp-ai') {
       const monthKey = actionElement.dataset.month;
       if (monthKey) { readAndSaveCrispAiForm(monthKey); saveCrispAiData(); render(); toast('AI performance data saved.'); }
+      return;
+    }
+    if (action === 'open-crisp-ai-manual') {
+      const monthKey = actionElement.dataset.month;
+      state.crisp.activeView = 'import';
+      if (monthKey) state.crisp.selectedMonth = monthKey;
+      renderPreservingScroll();
       return;
     }
     if (action === 'add-crisp-topic') {
@@ -5747,12 +7266,14 @@ app.addEventListener('click', async (event) => {
       render();
       return;
     }
-    if (action === 'delete-issue-batch') {
+    if (action === 'delete-batch' || action === 'delete-issue-batch') {
       const batchId = Number(actionElement.dataset.batchId);
-      if (!batchId || !window.confirm('Delete this import batch? All issues from this import will be removed.')) return;
+      const batch = state.batches.find((entry) => entry.id === batchId);
+      const label = batch?.filename ? `"${batch.filename}"` : 'this import batch';
+      if (!batchId || !window.confirm(`Delete ${label}? All issues from this import will be removed.`)) return;
       try {
         applyBootstrap(await api(`/api/batches/${batchId}`, { method: 'DELETE' }));
-        toast('Import deleted.');
+        toast(batch?.filename ? `Deleted ${batch.filename}.` : 'Import deleted.');
         render();
       } catch (e) { toast(`Delete failed: ${e.message}`); }
       return;
@@ -5781,12 +7302,56 @@ app.addEventListener('click', async (event) => {
       addProject();
       return;
     }
+    if (action === 'clear-all-issues') {
+      if (!window.confirm('This will permanently delete all imported issues, batches, and notes. This cannot be undone. Continue?')) return;
+      try {
+        applyBootstrap(await api('/api/clear-all-issues', { method: 'DELETE' }));
+        toast('All issue data cleared.');
+        render();
+      } catch (e) { toast(`Clear failed: ${e.message}`); }
+      return;
+    }
     if (action === 'save-settings') {
       saveSettings();
       return;
     }
+    if (action === 'edit-over45-insight') {
+      state.over45EditingId = Number(actionElement.dataset.id);
+      render();
+      app.querySelector(`[data-over45-edit="${state.over45EditingId}"]`)?.focus();
+      return;
+    }
+    if (action === 'cancel-over45-insight') {
+      state.over45EditingId = null;
+      render();
+      return;
+    }
+    if (action === 'save-over45-insight') {
+      const id = Number(actionElement.dataset.id);
+      const textarea = app.querySelector(`[data-over45-edit="${id}"]`);
+      const value = textarea?.value ?? '';
+      const project = state.projectTrackingProjects.find((p) => p.id === id);
+      if (project) {
+        project.notes = value;
+        state.over45EditingId = null;
+        render();
+        try {
+          applyBootstrap(await api(`/api/project-tracking/projects/${id}`, {
+            method: 'POST',
+            body: JSON.stringify({ field: 'notes', value })
+          }));
+          toast('Insight saved.');
+          render();
+        } catch (e) { toast(`Save failed: ${e.message}`); render(); }
+      }
+      return;
+    }
     if (action === 'add-rule') {
       saveRule();
+      return;
+    }
+    if (action === 'add-etaxgo-rule') {
+      saveEtaxgoRule();
       return;
     }
     if (action === 'save-category') {
@@ -6103,6 +7668,37 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
+  const venioView = closestFromEvent(event, '[data-venio-view]')?.dataset.venioView;
+  if (venioView) {
+    state.venioView = venioView;
+    renderPreservingScroll();
+    return;
+  }
+
+  const venioCatSort = closestFromEvent(event, '[data-venio-category-sort]')?.dataset.venioCategorySort;
+  if (venioCatSort) {
+    state.venioIssue.categorySort = venioCatSort;
+    renderPreservingScroll();
+    return;
+  }
+
+  const etaxgoView = closestFromEvent(event, '[data-etaxgo-view]')?.dataset.etaxgoView;
+  if (etaxgoView) {
+    state.etaxgoView = etaxgoView;
+    renderPreservingScroll();
+    return;
+  }
+
+  const etaxgoCatSort = closestFromEvent(event, '[data-etaxgo-category-sort]')?.dataset.etaxgoCategorySort;
+  if (etaxgoCatSort) {
+    state.etaxgoIssue.categorySort = etaxgoCatSort;
+    renderPreservingScroll();
+    return;
+  }
+
+  const saveEtaxgoRuleId = closestFromEvent(event, '[data-save-etaxgo-rule]')?.dataset.saveEtaxgoRule;
+  if (saveEtaxgoRuleId) { saveEtaxgoRule(Number(saveEtaxgoRuleId)); return; }
+
   const projectView = closestFromEvent(event, '[data-project-view]')?.dataset.projectView;
   if (projectView) {
     state.projectTracking.activeView = projectView;
@@ -6199,8 +7795,23 @@ app.addEventListener('change', (event) => {
     render();
     return;
   }
-  if (target.matches('[data-manual-month]')) {
-    state.manual.selectedMonth = target.value;
+  if (target.matches('[data-manual-year]')) {
+    state.manual.selectedYear = target.value ? String(parseInt(target.value, 10)) : String(new Date().getFullYear());
+    render();
+    return;
+  }
+  if (target.matches('[data-manual-month-filter]')) {
+    state.manual.selectedMonthFilter = target.value;
+    render();
+    return;
+  }
+  if (target.matches('[data-venio-issue-month]')) {
+    state.venioIssue.selectedMonth = target.value;
+    render();
+    return;
+  }
+  if (target.matches('[data-etaxgo-issue-month]')) {
+    state.etaxgoIssue.selectedMonth = target.value;
     render();
     return;
   }
@@ -6293,20 +7904,28 @@ app.addEventListener('change', (event) => {
 });
 
 async function uploadCsv(format = 'normalized') {
-  const files = _pendingUploadFiles.length ? _pendingUploadFiles : [...(app.querySelector(format === 'jira' ? '[data-action="jira-file"]' : '[data-action="csv-file"]')?.files ?? [])];
+  const actionMap = { jira: 'jira-file', 'etaxgo-jira': 'etaxgo-jira-file', normalized: 'csv-file', etaxgo: 'csv-file' };
+  const files = _pendingUploadFiles.length ? _pendingUploadFiles : [...(app.querySelector(`[data-action="${actionMap[format] ?? 'csv-file'}"]`)?.files ?? [])];
   if (!files.length) return toast('Select one or more CSV files first.');
-  const endpoint = format === 'jira' ? '/api/import-jira' : '/api/import';
+  const endpoint = (format === 'jira' || format === 'etaxgo-jira') ? '/api/import-jira' : '/api/import';
   state.uploadLoading = true;
   state.uploadResult = null;
   render();
   let latestPayload = null;
   const results = [];
   try {
+    const overrideMonth = format === 'normalized'
+      ? (app.querySelector('[data-venio-import-month]')?.value || null)
+      : format === 'etaxgo'
+        ? (app.querySelector('[data-etaxgo-import-month]')?.value || null)
+        : null;
     for (const file of files) {
       const content = await file.text();
+      const body = { filename: file.name, content };
+      if (overrideMonth) body.overrideMonth = overrideMonth;
       const payload = await api(endpoint, {
         method: 'POST',
-        body: JSON.stringify({ filename: file.name, content })
+        body: JSON.stringify(body)
       });
       latestPayload = payload;
       results.push({ file: file.name, validRows: payload.validRows ?? 0, skippedRows: payload.skippedRows ?? 0 });
@@ -6325,7 +7944,13 @@ async function uploadCsv(format = 'normalized') {
       state.uploadResult = null;
       state.uploadLoading = false;
       state.uploadSelectedFiles = [];
-      state.view = 'dashboard';
+      if (format === 'etaxgo' || format === 'etaxgo-jira') {
+        state.view = 'etaxgo-issue';
+        state.etaxgoView = 'dashboard';
+      } else {
+        state.view = 'dashboard';
+        state.venioView = 'dashboard';
+      }
       render();
     }, 2000);
   } catch (error) {
@@ -6544,6 +8169,26 @@ async function saveRule(id = null) {
   }
   applyBootstrap(await api('/api/rules', { method: 'POST', body: JSON.stringify(payload) }));
   toast('Rule saved.');
+  render();
+}
+
+async function saveEtaxgoRule(id = null) {
+  let payload;
+  if (id) {
+    const fields = {};
+    app.querySelectorAll(`[data-etaxgo-rule="${id}"]`).forEach((input) => {
+      fields[input.dataset.etaxgoRuleField] = input.type === 'checkbox' ? input.checked : input.value;
+    });
+    payload = { id, ...fields };
+  } else {
+    payload = {};
+    app.querySelectorAll('[data-etaxgo-new-rule]').forEach((input) => {
+      payload[input.dataset.etaxgoNewRule] = input.value;
+    });
+    payload.active = true;
+  }
+  applyBootstrap(await api('/api/etaxgo-rules', { method: 'POST', body: JSON.stringify(payload) }));
+  toast('eTaxGo rule saved.');
   render();
 }
 

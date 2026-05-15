@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { DEFAULT_RULES } from './category.js';
+import { DEFAULT_ETAXGO_RULES } from './etaxgoCategory.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -76,6 +77,15 @@ export function migrate() {
       active INTEGER NOT NULL DEFAULT 1
     );
 
+    CREATE TABLE IF NOT EXISTS etaxgo_keyword_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL,
+      keyword TEXT NOT NULL,
+      language TEXT NOT NULL,
+      weight INTEGER NOT NULL DEFAULT 1,
+      active INTEGER NOT NULL DEFAULT 1
+    );
+
     CREATE TABLE IF NOT EXISTS project_tracking_batches (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       filename TEXT NOT NULL,
@@ -119,7 +129,8 @@ export function migrate() {
     pending_critical_hours: '72',
     solve_warning_hours: '36',
     solve_critical_hours: '72',
-    dark_mode: 'false'
+    dark_mode: 'false',
+    over_days_threshold: '45'
   };
 
   const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -135,6 +146,7 @@ export function migrate() {
       category_rule = NULL
     WHERE LOWER(TRIM(COALESCE(project_name, ''))) <> 'venio'
       AND UPPER(TRIM(COALESCE(issue_key, ''))) NOT LIKE 'VENIO-%'
+      AND LOWER(TRIM(COALESCE(project_name, ''))) <> 'etaxgo'
   `).run();
 
   const ruleCount = db.prepare('SELECT COUNT(*) AS count FROM category_keyword_rules').get().count;
@@ -145,6 +157,47 @@ export function migrate() {
     `);
     for (const rule of DEFAULT_RULES) insertRule.run(...rule);
   }
+
+  const etaxgoRuleCount = db.prepare('SELECT COUNT(*) AS count FROM etaxgo_keyword_rules').get().count;
+  if (!etaxgoRuleCount) {
+    const insertEtaxgoRule = db.prepare(`
+      INSERT INTO etaxgo_keyword_rules (category, keyword, language, weight, active)
+      VALUES (?, ?, ?, ?, 1)
+    `);
+    for (const rule of DEFAULT_ETAXGO_RULES) insertEtaxgoRule.run(...rule);
+  }
+
+  db.prepare(`
+    UPDATE etaxgo_keyword_rules
+    SET category = CASE
+      WHEN category = 'Failed Status' THEN 'Failed'
+      WHEN category = 'Email/Notification' THEN 'Email'
+      ELSE category
+    END
+    WHERE category IN ('Failed Status', 'Email/Notification')
+  `).run();
+
+  db.prepare(`
+    UPDATE issues
+    SET
+      venio_category_auto = CASE
+        WHEN venio_category_auto = 'Failed Status' THEN 'Failed'
+        WHEN venio_category_auto = 'Email/Notification' THEN 'Email'
+        ELSE venio_category_auto
+      END,
+      venio_category_manual = CASE
+        WHEN venio_category_manual = 'Failed Status' THEN 'Failed'
+        WHEN venio_category_manual = 'Email/Notification' THEN 'Email'
+        ELSE venio_category_manual
+      END,
+      venio_category_final = CASE
+        WHEN venio_category_final = 'Failed Status' THEN 'Failed'
+        WHEN venio_category_final = 'Email/Notification' THEN 'Email'
+        ELSE venio_category_final
+      END
+    WHERE LOWER(TRIM(COALESCE(project_name, ''))) = 'etaxgo'
+      OR UPPER(TRIM(COALESCE(issue_key, ''))) LIKE 'ETAXGO-%'
+  `).run();
 }
 
 export function getSettings() {
@@ -157,6 +210,14 @@ export function getRules() {
   return db.prepare(`
     SELECT id, category, keyword, language, weight, active
     FROM category_keyword_rules
+    ORDER BY category, weight DESC, keyword
+  `).all().map((row) => ({ ...row, active: Boolean(row.active) }));
+}
+
+export function getEtaxGoRules() {
+  return db.prepare(`
+    SELECT id, category, keyword, language, weight, active
+    FROM etaxgo_keyword_rules
     ORDER BY category, weight DESC, keyword
   `).all().map((row) => ({ ...row, active: Boolean(row.active) }));
 }
@@ -248,4 +309,17 @@ export function deleteIssueBatch(batchId) {
 
 export function deleteCrispBatch(_batchId) {
   // Crisp data is stored client-side only; no server-side Crisp tables exist.
+}
+
+export function clearAllIssues() {
+  db.exec('BEGIN');
+  try {
+    db.exec('DELETE FROM issue_notes');
+    db.exec('DELETE FROM issues');
+    db.exec('DELETE FROM import_batches');
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 }

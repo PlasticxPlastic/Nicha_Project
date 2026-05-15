@@ -36,9 +36,7 @@ export function number(value) {
 }
 
 export function dateValue(value) {
-  if (!value) return null;
-  const date = new Date(String(value).replace(' ', 'T'));
-  return Number.isNaN(date.getTime()) ? null : date;
+  return dateOrNull(value);
 }
 
 export function formatDate(value) {
@@ -114,7 +112,9 @@ export function emptyToNull(value) {
 }
 
 export function numberOrNull(value) {
-  const parsed = Number(String(value ?? '').replace(/,/g, '').trim());
+  const text = String(value ?? '').replace(/,/g, '').trim();
+  if (text === '') return null;
+  const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -130,6 +130,20 @@ export function dateOrNull(value) {
     if (meridiem.toUpperCase() === 'PM') hour += 12;
     const parsedJiraDate = new Date(year, month, Number(day), hour, Number(minuteText));
     return Number.isNaN(parsedJiraDate.getTime()) ? null : parsedJiraDate;
+  }
+  const numericDate = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (numericDate) {
+    const [, dayText, monthText, yearText, hourText = '0', minuteText = '0', secondText = '0'] = numericDate;
+    const year = Number(yearText.length === 2 ? `20${yearText}` : yearText);
+    const parsedNumericDate = new Date(
+      year,
+      Number(monthText) - 1,
+      Number(dayText),
+      Number(hourText),
+      Number(minuteText),
+      Number(secondText)
+    );
+    return Number.isNaN(parsedNumericDate.getTime()) ? null : parsedNumericDate;
   }
   const date = new Date(text);
   return Number.isNaN(date.getTime()) ? null : date;

@@ -1,5 +1,6 @@
-import { db, getRules } from './db.js';
+import { db, getRules, getEtaxGoRules } from './db.js';
 import { detectCategory } from './category.js';
+import { detectEtaxGoCategory } from './etaxgoCategory.js';
 import { parseCsv, validateColumns } from './csv.js';
 
 function emptyToNull(value) {
@@ -8,8 +9,18 @@ function emptyToNull(value) {
 }
 
 function numberOrNull(value) {
-  const parsed = Number(String(value ?? '').replace(/,/g, '').trim());
+  const text = String(value ?? '').replace(/,/g, '').trim();
+  if (text === '') return null;
+  const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function rowValue(row, ...headers) {
+  for (const header of headers) {
+    const value = emptyToNull(row[header]);
+    if (value !== null) return value;
+  }
+  return null;
 }
 
 function dateOrNull(value) {
@@ -24,6 +35,20 @@ function dateOrNull(value) {
     if (meridiem.toUpperCase() === 'PM') hour += 12;
     const parsedJiraDate = new Date(year, month, Number(day), hour, Number(minuteText));
     return Number.isNaN(parsedJiraDate.getTime()) ? null : parsedJiraDate;
+  }
+  const numericDate = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (numericDate) {
+    const [, dayText, monthText, yearText, hourText = '0', minuteText = '0', secondText = '0'] = numericDate;
+    const year = Number(yearText.length === 2 ? `20${yearText}` : yearText);
+    const parsedNumericDate = new Date(
+      year,
+      Number(monthText) - 1,
+      Number(dayText),
+      Number(hourText),
+      Number(minuteText),
+      Number(secondText)
+    );
+    return Number.isNaN(parsedNumericDate.getTime()) ? null : parsedNumericDate;
   }
   const parsed = new Date(text);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
@@ -40,54 +65,78 @@ function hoursBetween(startValue, endValue) {
   return Number(((end.getTime() - start.getTime()) / 36e5).toFixed(1));
 }
 
+function statusToCategory(status) {
+  const s = String(status ?? '').trim().toLowerCase();
+  if (/^done$|^resolved$|^closed$|^complete/.test(s)) return 'Done';
+  if (/progress|review|testing/.test(s)) return 'In Progress';
+  return 'To Do';
+}
+
+function normalizeIssueType(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const normalized = text.toLowerCase();
+  if (normalized === 'production issue' || normalized === 'production issues') return 'Production Issue';
+  if (normalized === 'request' || normalized === 'requests') return 'Request';
+  if (normalized === 'beauty' || normalized === 'beauties') return 'Beauty';
+  return text;
+}
+
 function isVenioIssue(issue) {
   return String(issue.project_name ?? '').trim().toLowerCase() === 'venio'
     || String(issue.issue_key ?? '').trim().toUpperCase().startsWith('VENIO-');
 }
 
-function toIssue(row) {
+function isEtaxGoIssue(issue) {
+  return String(issue.project_name ?? '').trim().toLowerCase() === 'etaxgo'
+    || String(issue.issue_key ?? '').trim().toUpperCase().startsWith('ETAXGO-');
+}
+
+function toMappedIssue(row, importedAt = new Date().toISOString()) {
+  const reportDate = rowValue(row, 'Report Date');
+  const lastUpdatedDate = rowValue(row, 'Last Updated Date', 'Last Updated');
+  const resolvedDate = rowValue(row, 'Resolved Date (Proxy)', 'Resolved Date');
+  const created = rowValue(row, 'Created');
+  const updated = rowValue(row, 'Updated');
+  const resolved = rowValue(row, 'Resolved');
+  const reportDateSource = reportDate ?? created;
+  const resolvedDateSource = resolvedDate ?? resolved;
+  const status = rowValue(row, 'Status');
+  const issueResolution = rowValue(row, 'Resolution') ?? (resolvedDateSource ? 'Done' : null);
   return {
-    summary: emptyToNull(row.Summary),
-    issue_key: emptyToNull(row['Issue key']),
-    issue_type: emptyToNull(row['Issue Type']),
-    status: emptyToNull(row.Status),
-    issue_resolution: emptyToNull(row.Resolution),
-    project_name: emptyToNull(row['Project name']),
-    project_type: emptyToNull(row['Project type']),
-    priority: emptyToNull(row.Priority),
-    description: emptyToNull(row.Description),
-    customer_code: emptyToNull(row['Custom field (Customer Code)']),
-    status_category: emptyToNull(row['Status Category']) ?? 'Other',
-    report_date: emptyToNull(row['Report Date']),
-    last_updated_date: emptyToNull(row['Last Updated Date']),
-    resolved_date: emptyToNull(row['Resolved Date (Proxy)']),
-    time_to_solve_hours: numberOrNull(row['Time to Solve (hrs)']),
-    pending_age_hours: numberOrNull(row['Pending Age (hrs)'])
+    summary: rowValue(row, 'Summary'),
+    issue_key: rowValue(row, 'Issue key'),
+    issue_type: normalizeIssueType(rowValue(row, 'Issue Type')),
+    status,
+    issue_resolution: issueResolution,
+    project_name: rowValue(row, 'Project name'),
+    project_type: rowValue(row, 'Project type'),
+    priority: rowValue(row, 'Priority'),
+    description: rowValue(row, 'Description'),
+    customer_code: rowValue(row, 'Custom field (Customer Code)', 'Customer Code'),
+    status_category: rowValue(row, 'Status Category') ?? statusToCategory(status),
+    report_date: reportDate ?? isoOrNull(created),
+    last_updated_date: lastUpdatedDate ?? isoOrNull(updated),
+    resolved_date: resolvedDate ?? isoOrNull(resolved),
+    time_to_solve_hours: numberOrNull(row['Time to Solve (hrs)']) ?? numberOrNull(row['Time to Solve']) ?? (
+      resolvedDateSource ? hoursBetween(reportDateSource, resolvedDateSource) : null
+    ),
+    pending_age_hours: numberOrNull(row['Pending Age (hrs)']) ?? numberOrNull(row['Pending Age']) ?? (
+      resolvedDateSource ? null : hoursBetween(reportDateSource, importedAt)
+    )
   };
 }
 
+function toIssue(row, importedAt = new Date().toISOString()) {
+  return toMappedIssue(row, importedAt);
+}
+
 function toRawJiraIssue(row, importedAt = new Date().toISOString()) {
-  const created = emptyToNull(row.Created);
-  const updated = emptyToNull(row.Updated);
-  const resolved = emptyToNull(row.Resolved);
-  return {
-    summary: emptyToNull(row.Summary),
-    issue_key: emptyToNull(row['Issue key']),
-    issue_type: emptyToNull(row['Issue Type']),
-    status: emptyToNull(row.Status),
-    issue_resolution: emptyToNull(row.Resolution),
-    project_name: emptyToNull(row['Project name']),
-    project_type: emptyToNull(row['Project type']),
-    priority: emptyToNull(row.Priority),
-    description: emptyToNull(row.Description),
-    customer_code: emptyToNull(row['Custom field (Customer Code)']),
-    status_category: emptyToNull(row['Status Category']) ?? 'Other',
-    report_date: isoOrNull(created),
-    last_updated_date: isoOrNull(updated),
-    resolved_date: isoOrNull(resolved),
-    time_to_solve_hours: resolved ? hoursBetween(created, resolved) : null,
-    pending_age_hours: resolved ? null : hoursBetween(created, importedAt)
-  };
+  return toMappedIssue(row, importedAt);
+}
+
+function toJiraDirectIssue(row, importedAt = new Date().toISOString()) {
+  return toMappedIssue(row, importedAt);
 }
 
 function dateRange(issues) {
@@ -98,9 +147,10 @@ function dateRange(issues) {
   };
 }
 
-function importIssues(filename, records, rowToIssue, totalRows) {
+function importIssues(filename, records, rowToIssue, totalRows, overrideMonth = null) {
   const now = new Date().toISOString();
   const rules = getRules();
+  const etaxgoRules = getEtaxGoRules();
   const validIssues = [];
   let skippedRows = 0;
 
@@ -110,6 +160,7 @@ function importIssues(filename, records, rowToIssue, totalRows) {
       skippedRows += 1;
       continue;
     }
+    if (overrideMonth) issue.report_date = `${overrideMonth}-01`;
     validIssues.push(issue);
   }
 
@@ -146,12 +197,17 @@ function importIssues(filename, records, rowToIssue, totalRows) {
     `);
 
     for (const issue of validIssues) {
-      const detected = isVenioIssue(issue)
-        ? detectCategory(issue, rules)
-        : { category: null, confidence: null, rule: null };
+      let detected;
+      if (isVenioIssue(issue)) {
+        detected = detectCategory(issue, rules);
+      } else if (isEtaxGoIssue(issue)) {
+        detected = detectEtaxGoCategory(issue, etaxgoRules);
+      } else {
+        detected = { category: null, confidence: null, rule: null };
+      }
       const existing = findExisting.get(issue.issue_key);
-      const manualCategory = isVenioIssue(issue) ? existing?.venio_category_manual || null : null;
-      const finalCategory = isVenioIssue(issue) ? manualCategory || detected.category : null;
+      const manualCategory = (isVenioIssue(issue) || isEtaxGoIssue(issue)) ? existing?.venio_category_manual || null : null;
+      const finalCategory = (isVenioIssue(issue) || isEtaxGoIssue(issue)) ? manualCategory || detected.category : null;
 
       if (existing) {
         updateIssue.run(
@@ -228,18 +284,26 @@ function importIssues(filename, records, rowToIssue, totalRows) {
   };
 }
 
-export function importCsvContent(filename, content) {
+export function importCsvContent(filename, content, overrideMonth = null) {
   const { headers, records } = parseCsv(content);
-  const missingColumns = validateColumns(headers);
-  if (missingColumns.length) {
-    return {
-      ok: false,
-      missingColumns,
-      totalRows: records.length
-    };
+
+  // Auto-detect: if CSV has 'Created' but not 'Report Date' → Jira direct export format
+  const isJiraDirect = headers.includes('Created') && !headers.includes('Report Date');
+  if (isJiraDirect) {
+    const required = ['Summary', 'Issue key', 'Issue Type', 'Status', 'Created'];
+    const missing = required.filter((col) => !headers.includes(col));
+    if (missing.length) {
+      return { ok: false, missingColumns: missing, totalRows: records.length };
+    }
+    return importIssues(filename, records, toJiraDirectIssue, records.length, overrideMonth);
   }
 
-  return importIssues(filename, records, toIssue, records.length);
+  // Original prepared-CSV format
+  const missingColumns = validateColumns(headers);
+  if (missingColumns.length) {
+    return { ok: false, missingColumns, totalRows: records.length };
+  }
+  return importIssues(filename, records, toIssue, records.length, overrideMonth);
 }
 
 export function importJiraCsvContent(filename, content) {
@@ -263,10 +327,23 @@ export function importJiraCsvContent(filename, content) {
   if (missingColumns.length) {
     return {
       ok: false,
+      error: `This file does not match the Jira CSV format required by this workspace. Missing columns: ${missingColumns.join(', ')}`,
       missingColumns,
       totalRows: records.length
     };
   }
 
-  return importIssues(filename, records, toRawJiraIssue, records.length);
+  const totalRows = records.length;
+  const filteredRecords = records.filter((row) => {
+    const issueType = normalizeIssueType(rowValue(row, 'Issue Type'));
+    const projectName = String(rowValue(row, 'Project name') ?? '').trim().toLowerCase();
+    const issueKey = String(rowValue(row, 'Issue key') ?? '').trim().toUpperCase();
+    const isVenio = projectName === 'venio' || issueKey.startsWith('VENIO-');
+    const isEtaxGo = projectName === 'etaxgo' || issueKey.startsWith('ETAXGO-');
+    const isVenioValidType = isVenio && (issueType === 'Production Issue' || issueType === 'Beauty');
+    const isEtaxGoValidType = isEtaxGo && (issueType === 'Production Issue' || issueType === 'Request' || issueType === 'Beauty');
+    return isVenioValidType || isEtaxGoValidType;
+  });
+
+  return importIssues(filename, filteredRecords, toRawJiraIssue, totalRows);
 }

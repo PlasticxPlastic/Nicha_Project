@@ -350,48 +350,77 @@ export function parseCsvText(text) {
 
 // ---- Issue normalization ----
 
-export function normalizedIssueFromRow(row) {
-  return {
-    summary: emptyToNull(row.Summary),
-    issue_key: emptyToNull(row['Issue key']),
-    issue_type: emptyToNull(row['Issue Type']),
-    status: emptyToNull(row.Status),
-    issue_resolution: emptyToNull(row.Resolution),
-    project_name: emptyToNull(row['Project name']),
-    project_type: emptyToNull(row['Project type']),
-    priority: emptyToNull(row.Priority),
-    description: emptyToNull(row.Description),
-    customer_code: emptyToNull(row['Custom field (Customer Code)']),
-    status_category: emptyToNull(row['Status Category']) ?? 'Other',
-    report_date: emptyToNull(row['Report Date']),
-    last_updated_date: emptyToNull(row['Last Updated Date']),
-    resolved_date: emptyToNull(row['Resolved Date (Proxy)']),
-    time_to_solve_hours: numberOrNull(row['Time to Solve (hrs)']),
-    pending_age_hours: numberOrNull(row['Pending Age (hrs)'])
-  };
+export function rowValue(row, ...headers) {
+  for (const header of headers) {
+    const value = emptyToNull(row[header]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+export function normalizeIssueType(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const normalized = text.toLowerCase();
+  if (normalized === 'production issue' || normalized === 'production issues') return 'Production Issue';
+  if (normalized === 'request' || normalized === 'requests') return 'Request';
+  if (normalized === 'beauty' || normalized === 'beauties') return 'Beauty';
+  return text;
+}
+
+export function statusToCategory(status) {
+  const value = String(status ?? '').trim().toLowerCase();
+  if (/^done$|^resolved$|^closed$|^complete/.test(value)) return 'Done';
+  if (/progress|review|testing/.test(value)) return 'In Progress';
+  return 'To Do';
+}
+
+export function isSupportedJiraRow(row) {
+  const issueType = normalizeIssueType(rowValue(row, 'Issue Type'));
+  const projectName = String(rowValue(row, 'Project name') ?? '').trim().toLowerCase();
+  const issueKey = String(rowValue(row, 'Issue key') ?? '').trim().toUpperCase();
+  const isVenio = projectName === 'venio' || issueKey.startsWith('VENIO-');
+  const isEtaxGo = projectName === 'etaxgo' || issueKey.startsWith('ETAXGO-');
+  const isVenioValidType = isVenio && (issueType === 'Production Issue' || issueType === 'Beauty');
+  const isEtaxGoValidType = isEtaxGo && (issueType === 'Production Issue' || issueType === 'Request' || issueType === 'Beauty');
+  return isVenioValidType || isEtaxGoValidType;
+}
+
+export function normalizedIssueFromRow(row, importedAt = new Date().toISOString()) {
+  return jiraIssueFromRow(row, importedAt);
 }
 
 export function jiraIssueFromRow(row, importedAt = new Date().toISOString()) {
-  const created = emptyToNull(row.Created);
-  const updated = emptyToNull(row.Updated);
-  const resolved = emptyToNull(row.Resolved);
+  const reportDate = rowValue(row, 'Report Date');
+  const lastUpdatedDate = rowValue(row, 'Last Updated Date', 'Last Updated');
+  const resolvedDate = rowValue(row, 'Resolved Date (Proxy)', 'Resolved Date');
+  const created = rowValue(row, 'Created');
+  const updated = rowValue(row, 'Updated');
+  const resolved = rowValue(row, 'Resolved');
+  const reportDateSource = reportDate ?? created;
+  const resolvedDateSource = resolvedDate ?? resolved;
+  const status = rowValue(row, 'Status');
   return {
-    summary: emptyToNull(row.Summary),
-    issue_key: emptyToNull(row['Issue key']),
-    issue_type: emptyToNull(row['Issue Type']),
-    status: emptyToNull(row.Status),
-    issue_resolution: emptyToNull(row.Resolution),
-    project_name: emptyToNull(row['Project name']),
-    project_type: emptyToNull(row['Project type']),
-    priority: emptyToNull(row.Priority),
-    description: emptyToNull(row.Description),
-    customer_code: emptyToNull(row['Custom field (Customer Code)']),
-    status_category: emptyToNull(row['Status Category']) ?? 'Other',
-    report_date: isoOrNull(created),
-    last_updated_date: isoOrNull(updated),
-    resolved_date: isoOrNull(resolved),
-    time_to_solve_hours: resolved ? hoursBetween(created, resolved) : null,
-    pending_age_hours: resolved ? null : hoursBetween(created, importedAt)
+    summary: rowValue(row, 'Summary'),
+    issue_key: rowValue(row, 'Issue key'),
+    issue_type: normalizeIssueType(rowValue(row, 'Issue Type')),
+    status,
+    issue_resolution: rowValue(row, 'Resolution') ?? (resolvedDateSource ? 'Done' : null),
+    project_name: rowValue(row, 'Project name'),
+    project_type: rowValue(row, 'Project type'),
+    priority: rowValue(row, 'Priority'),
+    description: rowValue(row, 'Description'),
+    customer_code: rowValue(row, 'Custom field (Customer Code)', 'Customer Code'),
+    status_category: rowValue(row, 'Status Category') ?? statusToCategory(status),
+    report_date: reportDate ?? isoOrNull(created),
+    last_updated_date: lastUpdatedDate ?? isoOrNull(updated),
+    resolved_date: resolvedDate ?? isoOrNull(resolved),
+    time_to_solve_hours: numberOrNull(row['Time to Solve (hrs)']) ?? numberOrNull(row['Time to Solve']) ?? (
+      resolvedDateSource ? hoursBetween(reportDateSource, resolvedDateSource) : null
+    ),
+    pending_age_hours: numberOrNull(row['Pending Age (hrs)']) ?? numberOrNull(row['Pending Age']) ?? (
+      resolvedDateSource ? null : hoursBetween(reportDateSource, importedAt)
+    )
   };
 }
 
@@ -400,7 +429,12 @@ export function jiraIssueFromRow(row, importedAt = new Date().toISOString()) {
 export function importClientCsv(filename, content, format = 'normalized') {
   const store = loadClientStore();
   const { headers, records } = parseCsvText(content);
-  const required = format === 'jira' ? jiraRequiredColumns : requiredColumns;
+  const isJiraDirect = format !== 'jira' && headers.includes('Created') && !headers.includes('Report Date');
+  const required = isJiraDirect
+    ? ['Summary', 'Issue key', 'Issue Type', 'Status', 'Created']
+    : format === 'jira'
+      ? jiraRequiredColumns
+      : requiredColumns;
   const missingColumns = required.filter((column) => !headers.includes(column));
   if (missingColumns.length) {
     const error = new Error(`Missing columns: ${missingColumns.join(', ')}`);
@@ -409,11 +443,14 @@ export function importClientCsv(filename, content, format = 'normalized') {
   }
 
   const now = new Date().toISOString();
+  const sourceRecords = format === 'jira' ? records.filter(isSupportedJiraRow) : records;
   const validIssues = [];
   let skippedRows = 0;
 
-  for (const row of records) {
-    const issue = format === 'jira' ? jiraIssueFromRow(row, now) : normalizedIssueFromRow(row);
+  for (const row of sourceRecords) {
+    const issue = format === 'jira' || isJiraDirect
+      ? jiraIssueFromRow(row, now)
+      : normalizedIssueFromRow(row, now);
     if (!issue.issue_key) {
       skippedRows += 1;
     } else {
@@ -605,6 +642,282 @@ export function importClientCrispCsv(filename, content, month = currentMonthKey(
   };
 }
 
+// ---- Client-side XLSX parser (browser-native, no Node.js deps) ----
+
+function _xlsxU32LE(view, offset) { return view.getUint32(offset, true); }
+function _xlsxU16LE(view, offset) { return view.getUint16(offset, true); }
+
+async function _xlsxInflateRaw(bytes) {
+  const ds = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  const reader = ds.readable.getReader();
+  writer.write(bytes);
+  writer.close();
+  const chunks = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const chunk of chunks) { out.set(chunk, pos); pos += chunk.length; }
+  return out;
+}
+
+async function _xlsxUnzip(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const dec = new TextDecoder('utf-8');
+  let endOffset = -1;
+  for (let i = bytes.length - 22; i >= 0; i--) {
+    if (_xlsxU32LE(view, i) === 0x06054b50) { endOffset = i; break; }
+  }
+  if (endOffset < 0) throw new Error('Invalid XLSX file.');
+  const entryCount = _xlsxU16LE(view, endOffset + 10);
+  const dirOffset = _xlsxU32LE(view, endOffset + 16);
+  const entries = new Map();
+  let offset = dirOffset;
+  for (let i = 0; i < entryCount; i++) {
+    if (_xlsxU32LE(view, offset) !== 0x02014b50) throw new Error('Invalid XLSX directory.');
+    const method = _xlsxU16LE(view, offset + 10);
+    const compressedSize = _xlsxU32LE(view, offset + 20);
+    const fileNameLength = _xlsxU16LE(view, offset + 28);
+    const extraLength = _xlsxU16LE(view, offset + 30);
+    const commentLength = _xlsxU16LE(view, offset + 32);
+    const localOffset = _xlsxU32LE(view, offset + 42);
+    const fileName = dec.decode(bytes.subarray(offset + 46, offset + 46 + fileNameLength));
+    if (_xlsxU32LE(view, localOffset) !== 0x04034b50) throw new Error('Invalid XLSX file entry.');
+    const localNameLength = _xlsxU16LE(view, localOffset + 26);
+    const localExtraLength = _xlsxU16LE(view, localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
+    const data = method === 0 ? compressed : method === 8 ? await _xlsxInflateRaw(compressed) : null;
+    if (data) entries.set(fileName.replace(/\\/g, '/'), dec.decode(data));
+    offset += 46 + fileNameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function _xlsxXmlDecode(value = '') {
+  return String(value).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+}
+
+function _xlsxParseSharedStrings(xml = '') {
+  return [...xml.matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) =>
+    _xlsxXmlDecode([...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((item) => item[1]).join(''))
+  );
+}
+
+function _xlsxWorkbookSheetPath(entries) {
+  const workbook = entries.get('xl/workbook.xml');
+  const rels = entries.get('xl/_rels/workbook.xml.rels');
+  if (!workbook || !rels) return 'xl/worksheets/sheet1.xml';
+  const firstSheet = workbook.match(/<sheet\b[^>]*>/)?.[0];
+  const relId = firstSheet ? (firstSheet.match(/r:id="([^"]*)"/) || [])[1] : '';
+  const relMatch = relId
+    ? [...rels.matchAll(/<Relationship\b[^>]*>/g)].map((item) => item[0]).find((item) => (item.match(/Id="([^"]*)"/) || [])[1] === relId)
+    : null;
+  const target = relMatch ? (relMatch.match(/Target="([^"]*)"/) || [])[1] : 'worksheets/sheet1.xml';
+  return (target ?? 'worksheets/sheet1.xml').startsWith('/') ? target.replace(/^\//, '') : `xl/${(target ?? 'worksheets/sheet1.xml').replace(/^\.\.\//, '')}`;
+}
+
+function _xlsxCellValue(cellAttrs, body, sharedStrings) {
+  const type = (cellAttrs.match(/t="([^"]*)"/) || [])[1] ?? '';
+  const value = body.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? '';
+  if (type === 's') return sharedStrings[Number(value)] ?? '';
+  if (type === 'inlineStr') return _xlsxXmlDecode([...body.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((item) => item[1]).join(''));
+  return _xlsxXmlDecode(value);
+}
+
+async function _parseXlsxRowsClient(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const entries = await _xlsxUnzip(bytes);
+  const sharedStrings = _xlsxParseSharedStrings(entries.get('xl/sharedStrings.xml') ?? '');
+  const sheet = entries.get(_xlsxWorkbookSheetPath(entries)) ?? entries.get('xl/worksheets/sheet1.xml');
+  if (!sheet) throw new Error('Could not find the first worksheet.');
+  const rows = [];
+  for (const rowMatch of sheet.matchAll(/<row\b[^>]*r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g)) {
+    const row = [];
+    for (const cellMatch of rowMatch[2].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+      const ref = (cellMatch[1].match(/r="([^"]*)"/) || [])[1] ?? 'A';
+      const letters = ref.match(/[A-Z]+/)?.[0] ?? 'A';
+      const colIndex = letters.split('').reduce((t, l) => t * 26 + l.charCodeAt(0) - 64, 0) - 1;
+      row[colIndex] = _xlsxCellValue(cellMatch[1], cellMatch[2], sharedStrings);
+    }
+    rows[Number(rowMatch[1]) - 1] = row;
+  }
+  return rows;
+}
+
+const _PT_STAGES = ['Kick-off', 'Onboarding', 'Training', 'GoLive', 'Warranty', 'On Hold'];
+const _PT_PIPELINE_STAGES = ['Kick-off', 'Onboarding', 'Training', 'GoLive'];
+const _PT_REQUIRED_REVIEW_FIELDS = ['customer_name', 'project_name', 'package_type', 'user_count', 'stage'];
+const _PT_SALES_STAGE_MAPPINGS = [
+  { pattern: /\bplanning\b/, stage: 'Kick-off' },
+  { pattern: /\bimplementation\b|\bimplement\b/, stage: 'Onboarding' },
+  { pattern: /\btraining\b/, stage: 'Training' },
+  { pattern: /\bin\s*progress\b|\binprogress\b/, stage: 'GoLive' },
+  { pattern: /\bwarranty\b/, stage: 'GoLive' },
+  { pattern: /\bhold\s*projects?\b|\bon\s*hold\b/, stage: 'On Hold' }
+];
+
+function _ptClean(value) { const text = String(value ?? '').trim(); return text && text !== '-' ? text : null; }
+function _ptProjectNameKey(value) { return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' '); }
+function _ptHeaderValue(row, aliases) {
+  for (const alias of aliases) { const v = row[alias]; if (v !== undefined && v !== null && String(v).trim() !== '') return v; }
+  return null;
+}
+function _ptExcelSerialToDate(value) {
+  const serial = Number(value);
+  if (!Number.isFinite(serial) || serial <= 0) return null;
+  return new Date(Date.UTC(1899, 11, 30) + serial * 86400000).toISOString().slice(0, 10);
+}
+function _ptNormalizeYear(yearText, fallbackYear) {
+  if (!yearText) return fallbackYear;
+  const y = Number(yearText);
+  return Number.isFinite(y) ? (y < 100 ? 2000 + y : y) : fallbackYear;
+}
+function _ptNormalizeDate(value, fallbackYear = new Date().getFullYear()) {
+  const text = _ptClean(value);
+  if (!text) return null;
+  if (/^\d+(\.\d+)?$/.test(text)) return _ptExcelSerialToDate(text);
+  const m = text.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+  if (m) {
+    const year = _ptNormalizeYear(m[3], fallbackYear);
+    return `${year}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+  }
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
+function _ptExtractDate(text, keywords, fallbackYear) {
+  const source = String(text ?? '');
+  for (const kw of keywords) {
+    const idx = source.toLowerCase().indexOf(kw.toLowerCase());
+    if (idx < 0) continue;
+    const found = source.slice(idx).match(/(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)/);
+    if (found) return _ptNormalizeDate(found[1], fallbackYear);
+  }
+  return null;
+}
+function _ptNormalizeSalesStageStatus(value) {
+  const text = String(value ?? '').replace(/^\s*\d+\.\s*/, '').trim().toLowerCase();
+  return text ? (_PT_SALES_STAGE_MAPPINGS.find(({ pattern }) => pattern.test(text))?.stage ?? null) : null;
+}
+function _ptNormalizeStage(value, context = {}) {
+  const text = String(value ?? '').replace(/^\s*\d+\.\s*/, '').trim().toLowerCase();
+  const salesStage = _ptNormalizeSalesStageStatus(value);
+  if (salesStage) return salesStage;
+  if (context.goLiveDate) return 'GoLive';
+  if (!text) return null;
+  if (text.includes('hold')) return 'On Hold';
+  if (text.includes('warranty')) return 'GoLive';
+  if (text.includes('ชนะ')) return context.goLiveDate ? 'GoLive' : null;
+  if (text.includes('training') || text.includes('เทรน')) return 'Training';
+  const notes = String(context.notes ?? '').toLowerCase();
+  if (text.includes('progress')) return notes.includes('training') || notes.includes('เทรน') ? 'Training' : 'GoLive';
+  if (text.includes('golive') || text.includes('go live')) return 'GoLive';
+  if (text.includes('implement')) return 'Onboarding';
+  if (text.includes('onboard')) return 'Onboarding';
+  if (text.includes('planning') || text.includes('kick')) return 'Kick-off';
+  return _PT_STAGES.find((s) => s.toLowerCase() === text) ?? null;
+}
+function _ptIsVenioProject(record) {
+  return [
+    _ptHeaderValue(record, ['Project Product', 'Product']),
+    _ptHeaderValue(record, ['ความสนใจ', 'Interest']),
+    _ptHeaderValue(record, ['Project Name', 'ดีล', 'Deal', 'Project'])
+  ].join(' ').toLowerCase().includes('venio');
+}
+function _ptReviewFieldsForProject(project) {
+  const missing = _PT_REQUIRED_REVIEW_FIELDS.filter((f) => { const v = project[f]; return v === null || v === undefined || v === ''; });
+  const stageIdx = _PT_PIPELINE_STAGES.indexOf(project.stage);
+  if (stageIdx >= 0) {
+    for (const [i, f] of ['kickoff_date', 'onboarding_date', 'training_date', 'golive_date'].entries()) {
+      if (i <= stageIdx && !project[f]) missing.push(f);
+    }
+  }
+  return [...new Set(missing)];
+}
+function _ptNormalizePackage(value, projectName = '') {
+  const src = `${value ?? ''} ${projectName ?? ''}`.toLowerCase();
+  if (src.includes('pro+')) return 'Pro+';
+  if (/\bpro\s*plus\b/.test(src)) return 'Pro+';
+  if (/\blite\b/.test(src)) return 'Lite';
+  if (/\bpro\b/.test(src)) return 'Pro';
+  return null;
+}
+function _ptToInteger(value) {
+  const n = Number(String(value ?? '').replace(/,/g, '').trim());
+  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : null;
+}
+function _ptRowsToRecords(rows) {
+  const headerIndex = rows.findIndex((row) => {
+    const joined = (row ?? []).join('|').toLowerCase();
+    return joined.includes('customer name') || joined.includes('project package') || joined.includes('golive date') || joined.includes('ลูกค้า');
+  });
+  if (headerIndex < 0) throw new Error('Could not find project headers in the workbook.');
+  const headers = (rows[headerIndex] ?? []).map((h) => String(h ?? '').trim());
+  return rows.slice(headerIndex + 1).map((values) => Object.fromEntries(headers.map((h, i) => [h, values?.[i] ?? ''])));
+}
+function _ptRecordToProject(record) {
+  if (!_ptIsVenioProject(record)) return null;
+  const customerName = _ptClean(_ptHeaderValue(record, ['Customer Name', 'ลูกค้า', 'Customer']));
+  const projectName = _ptClean(_ptHeaderValue(record, ['Project Name', 'ดีล', 'Deal', 'Project']));
+  if (!_ptProjectNameKey(projectName || customerName)) return null;
+  const rawPackageType = _ptClean(_ptHeaderValue(record, ['Package', 'Project Package', 'Project Package ', 'แพ็กเกจ']));
+  const sourceStatus = _ptClean(_ptHeaderValue(record, ['Implementation Stage', 'Project Stage', 'ขั้นตอนการขาย', 'Status']));
+  const healthStatus = _ptClean(_ptHeaderValue(record, ['Project Status']));
+  const fallbackStatus = _ptClean(_ptHeaderValue(record, ['ขั้นตอนการขาย', 'Implementation Stage', 'Project Stage', 'Status']));
+  const latestSummary = _ptClean(_ptHeaderValue(record, ['Latest Update', 'Notes', 'Notes / Latest Update', 'อัปเดตล่าสุด']));
+  const timelineEvent = _ptClean(_ptHeaderValue(record, ['Timeline', 'ไทม์ไลน์']));
+  const latestTimestamp = _ptClean(_ptHeaderValue(record, ['Latest Update At', 'ไทม์ไลน์ล่าสุด']));
+  const timeline = [latestSummary, timelineEvent].filter(Boolean).join('\n');
+  const kickoffDate = _ptNormalizeDate(_ptHeaderValue(record, ['Kick-off Date', 'Kickoff Date', 'วันที่เปิดดีล', 'วันที่สร้าง']));
+  const fallbackYear = Number(kickoffDate?.slice(0, 4)) || new Date().getFullYear();
+  const goLiveDate = _ptNormalizeDate(_ptHeaderValue(record, ['GoLive Date', 'Golive Date', 'Go Live Date', 'วันที่มีผล']), fallbackYear)
+    ?? _ptExtractDate(timeline, ['golive', 'go live'], fallbackYear);
+  const rawStage = fallbackStatus || sourceStatus;
+  const mappedStage = _ptNormalizeStage(rawStage, { goLiveDate, notes: timeline });
+  if (!mappedStage || !_ptNormalizeSalesStageStatus(rawStage)) return null;
+  const project = {
+    source_key: `project:${_ptProjectNameKey(projectName || customerName)}`,
+    customer_name: customerName,
+    project_name: projectName || customerName,
+    package_type: _ptNormalizePackage(rawPackageType, projectName),
+    user_count: _ptToInteger(_ptHeaderValue(record, ['User Count', 'Users', 'จำนวน', 'จำนวนผู้ใช้'])),
+    source_status: [rawStage, healthStatus].filter(Boolean).join(' / '),
+    stage: mappedStage,
+    kickoff_date: kickoffDate,
+    onboarding_date: _ptNormalizeDate(_ptHeaderValue(record, ['Onboarding Date', 'On-boarding Date']), fallbackYear)
+      ?? _ptExtractDate(timeline, ['onboarding', 'on-boarding'], fallbackYear),
+    training_date: _ptNormalizeDate(_ptHeaderValue(record, ['Training Date']), fallbackYear)
+      ?? _ptExtractDate(timeline, ['training', 'เทรนนิ่ง'], fallbackYear),
+    golive_date: goLiveDate,
+    notes: latestSummary || timelineEvent || latestTimestamp,
+    timeline_info: [latestTimestamp, timeline].filter(Boolean).join('\n')
+  };
+  const missing_fields = _ptReviewFieldsForProject(project);
+  return { ...project, missing_fields, needs_review: missing_fields.length > 0 };
+}
+
+export async function previewProjectXlsxClient(filename, base64Content) {
+  const rows = await _parseXlsxRowsClient(base64Content);
+  const records = _ptRowsToRecords(rows);
+  const projects = records.map(_ptRecordToProject).filter((p) => p && (p.customer_name || p.project_name));
+  return {
+    ok: true,
+    filename,
+    totalRows: records.length,
+    validRows: projects.length,
+    skippedRows: records.length - projects.length,
+    needsReview: projects.filter((p) => p.needs_review).length,
+    projects
+  };
+}
+
 // ---- Remote/local API facade ----
 
 let demoSeedPromise = null;
@@ -694,7 +1007,7 @@ export async function clientApi(path, options = {}) {
   }
 
   if (method === 'POST' && path === '/api/project-tracking/preview') {
-    throw new Error('Excel import requires the local Node server. Run npm run dev and try again.');
+    return previewProjectXlsxClient(body.filename ?? 'upload.xlsx', body.content ?? '');
   }
 
   if (method === 'POST' && path === '/api/project-tracking/import') {
@@ -840,7 +1153,6 @@ export async function api(path, options = {}) {
     && !path.startsWith('/api/auth')
     && path !== '/api/user-store'
     && path !== '/api/bootstrap'
-    && path !== '/api/project-tracking/preview'
   ) {
     return clientApi(path, options);
   }

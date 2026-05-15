@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, deleteIssueBatch, deleteCrispBatch, getBatches, getIssues, getProjectTrackingBatches, getProjectTrackingProjects, getRules, getSettings, migrate } from './db.js';
+import { db, deleteIssueBatch, deleteCrispBatch, clearAllIssues, getBatches, getIssues, getProjectTrackingBatches, getProjectTrackingProjects, getRules, getEtaxGoRules, getSettings, migrate } from './db.js';
 import { importCsvContent, importJiraCsvContent } from './importer.js';
 import { createProjectTrackingProject, deleteProjectTrackingBatch, deleteProjectTrackingProject, importProjectTrackingProjects, importProjectTrackingXlsx, previewProjectTrackingXlsx, updateProjectTrackingProject } from './projectTracking.js';
 
@@ -39,7 +39,8 @@ function bootstrapPayload() {
     projectTrackingProjects: getProjectTrackingProjects(),
     projectTrackingBatches: getProjectTrackingBatches(),
     settings: getSettings(),
-    rules: getRules()
+    rules: getRules(),
+    etaxgoRules: getEtaxGoRules()
   };
 }
 
@@ -68,7 +69,7 @@ async function handleApi(request, response) {
 
   if (request.method === 'POST' && url.pathname === '/api/import') {
     const body = JSON.parse(await readBody(request));
-    const result = importCsvContent(body.filename ?? 'upload.csv', body.content ?? '');
+    const result = importCsvContent(body.filename ?? 'upload.csv', body.content ?? '', body.overrideMonth ?? null);
     json(response, result.ok ? 200 : 400, { ...result, ...bootstrapPayload() });
     return;
   }
@@ -114,6 +115,12 @@ async function handleApi(request, response) {
 
   if (request.method === 'DELETE' && projectMatch) {
     deleteProjectTrackingProject(Number(projectMatch[1]));
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  if (request.method === 'DELETE' && url.pathname === '/api/clear-all-issues') {
+    clearAllIssues();
     json(response, 200, bootstrapPayload());
     return;
   }
@@ -164,6 +171,31 @@ async function handleApi(request, response) {
         VALUES (?, ?, ?, ?, ?)
       `).run(body.category, body.keyword, body.language, Number(body.weight), body.active ? 1 : 0);
     }
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/etaxgo-rules') {
+    const body = JSON.parse(await readBody(request));
+    if (body.id) {
+      db.prepare(`
+        UPDATE etaxgo_keyword_rules
+        SET category = ?, keyword = ?, language = ?, weight = ?, active = ?
+        WHERE id = ?
+      `).run(body.category, body.keyword, body.language, Number(body.weight), body.active ? 1 : 0, body.id);
+    } else {
+      db.prepare(`
+        INSERT INTO etaxgo_keyword_rules (category, keyword, language, weight, active)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(body.category, body.keyword, body.language, Number(body.weight), body.active ? 1 : 0);
+    }
+    json(response, 200, bootstrapPayload());
+    return;
+  }
+
+  const etaxgoRuleDeleteMatch = url.pathname.match(/^\/api\/etaxgo-rules\/(\d+)$/);
+  if (request.method === 'DELETE' && etaxgoRuleDeleteMatch) {
+    db.prepare('DELETE FROM etaxgo_keyword_rules WHERE id = ?').run(Number(etaxgoRuleDeleteMatch[1]));
     json(response, 200, bootstrapPayload());
     return;
   }

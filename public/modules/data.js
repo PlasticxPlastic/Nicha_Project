@@ -550,8 +550,8 @@ export function crispMetrics(operators) {
     .reduce((sum, operator) => sum + number(operator.conversations), 0);
   const activeOperators = operators.filter((operator) => number(operator.conversations) > 0);
   const avgRating = crispWeightedAverage(operators, 'rating', { excludeZero: true });
-  const avgResponseSeconds = crispWeightedAverage(operators, 'firstResponseAverageSeconds');
-  const avgResolutionSeconds = crispWeightedAverage(operators, 'resolutionAverageSeconds');
+  const avgResponseSeconds = crispWeightedAverage(operators, 'firstResponseMedianSeconds');
+  const avgResolutionSeconds = crispWeightedAverage(operators, 'resolutionMedianSeconds');
   const topVolume = [...activeOperators].sort((a, b) => number(b.conversations) - number(a.conversations))[0] ?? null;
   const fastestResponse = [...activeOperators]
     .filter((operator) => Number.isFinite(Number(operator.firstResponseAverageSeconds)))
